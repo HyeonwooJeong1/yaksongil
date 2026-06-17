@@ -13,6 +13,7 @@ GitHub Pages(/docs 폴더) 정적 호스팅용. 서버 관리 불필요.
 """
 import datetime
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -38,8 +39,33 @@ REG_SNIPPET = """
   </script>
 """
 
+# <body> 끝에 삽입: "앱 설치" 버튼 + 설치 프롬프트
+#   - Android/PC Chrome·Edge: beforeinstallprompt 캡처 → 1탭 설치(아이콘 생성)
+#   - iOS Safari: 프롬프트 미지원 → 버튼 탭 시 "홈 화면에 추가" 안내
+BODY_SNIPPET = """
+  <style>
+  #pwa-install-btn{position:fixed;left:16px;bottom:16px;z-index:9999;background:{{ACCENT}};color:#fff;
+    font-weight:700;padding:10px 16px;border-radius:9999px;box-shadow:0 4px 14px rgba(0,0,0,.28);
+    border:none;cursor:pointer;font-size:14px;font-family:inherit}
+  </style>
+  <button id="pwa-install-btn" style="display:none">📲 앱 설치</button>
+  <script>
+  (function(){
+    var btn=document.getElementById('pwa-install-btn'); var dp=null;
+    if(window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone) return;
+    window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();dp=e;btn.style.display='block';});
+    btn.addEventListener('click',function(){
+      if(dp){dp.prompt();dp.userChoice.then(function(){dp=null;btn.style.display='none';});return;}
+      alert('홈 화면에 추가:\\n\\niPhone(Safari): 하단 [공유] → 홈 화면에 추가\\nAndroid(Chrome): 메뉴(⋮) → 앱 설치\\nPC(Chrome/Edge): 주소창 오른쪽 설치 아이콘');
+    });
+    window.addEventListener('appinstalled',function(){btn.style.display='none';});
+    if(/iphone|ipad|ipod/i.test(navigator.userAgent)) btn.style.display='block';
+  })();
+  </script>
+"""
 
-def assemble(app_id, name, short, theme, bg, src_html: Path, out_dir: Path):
+
+def assemble(app_id, name, short, theme, bg, accent, icon_prefix, src_html: Path, out_dir: Path):
     if not src_html.exists():
         print(f"[ERROR] 소스 없음: {src_html}", file=sys.stderr)
         sys.exit(1)
@@ -48,10 +74,17 @@ def assemble(app_id, name, short, theme, bg, src_html: Path, out_dir: Path):
     html = src_html.read_text(encoding="utf-8")
     # 기존 manifest 링크 제거(특히 reader의 inline data-URI) → 우리 파일 매니페스트로 통일
     html = re.sub(r'<link[^>]*rel=["\']manifest["\'][^>]*/?>', "", html, flags=re.I)
+    # <head>: 매니페스트 + 서비스워커 등록
     if "</head>" in html:
         html = html.replace("</head>", REG_SNIPPET + "</head>", 1)
     else:
         html = REG_SNIPPET + html
+    # <body> 끝: "앱 설치" 버튼 (앱별 색상)
+    body_snip = BODY_SNIPPET.replace("{{ACCENT}}", accent)
+    if "</body>" in html:
+        html = html.replace("</body>", body_snip + "</body>", 1)
+    else:
+        html = html + body_snip
 
     (out_dir / "index.html").write_text(html, encoding="utf-8")
     (out_dir / "sw.js").write_text(
@@ -63,8 +96,11 @@ def assemble(app_id, name, short, theme, bg, src_html: Path, out_dir: Path):
                          .replace("{{THEME}}", theme).replace("{{BG}}", bg),
         encoding="utf-8",
     )
+    # 아이콘 복사 (앱별 색상)
+    for s in (192, 512):
+        shutil.copy(PWA / "icons" / f"{icon_prefix}-{s}.png", out_dir / f"icon-{s}.png")
     mb = (out_dir / "index.html").stat().st_size / 1024 / 1024
-    print(f"  [OK] docs/{out_dir.name}/  (index.html {mb:.2f}MB, sw v{VERSION})")
+    print(f"  [OK] docs/{out_dir.name}/  (index.html {mb:.2f}MB, icons + sw v{VERSION})")
 
 
 LANDING = """<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
@@ -91,9 +127,11 @@ def main():
 
     print("[3/3] docs/ 조립 (서비스워커 + 매니페스트 부착)...")
     assemble("druginfo-gen", "다제약물 응급 QR 생성기", "QR생성기",
-             "#1e293b", "#f8fafc", ROOT / "dist" / "qr_generator.html", DOCS / "generator")
+             "#1e293b", "#f8fafc", "#2563eb", "gen",
+             ROOT / "dist" / "qr_generator.html", DOCS / "generator")
     assemble("druginfo-reader", "응급의료정보 QR 리더", "응급QR리더",
-             "#1e293b", "#f8fafc", ROOT / "mobile_reader" / "dist" / "reader.html", DOCS / "reader")
+             "#1e293b", "#f8fafc", "#059669", "reader",
+             ROOT / "mobile_reader" / "dist" / "reader.html", DOCS / "reader")
     (DOCS / "index.html").write_text(LANDING, encoding="utf-8")
 
     print()

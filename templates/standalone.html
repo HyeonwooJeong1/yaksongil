@@ -614,19 +614,35 @@
     return d < today;
   }
 
+  // 두 종료일("YY.MM.DD"|null) 중 더 긴(늦은) 것. 중복 약 병합 시 종료일이 짧아지지 않게.
+  //  a=기존값, b=이번 추가값.
+  //  - b가 null(이번 추가는 종료일 의견 없음) → 기존(a) 유지
+  //  - a가 null(기존이 무기한) → 무기한 유지(가장 김)
+  //  - 둘 다 날짜 → 늦은 날짜
+  function laterEnd(a, b) {
+    if (b == null) return a;
+    if (a == null) return null;
+    const da = parseEndDate(a), db = parseEndDate(b);
+    if (!da) return b;
+    if (!db) return a;
+    return da >= db ? a : b;
+  }
+
 
   // ============================================================
   // 약물 추가/제거 (selectedDrugs Map 기반)
   // ============================================================
   function addDrug(code, target, endDate) {
-    // endDate 결정: 명시값 > 신규모드면 조제일수 계산 > 기존값 유지
+    // endDate 결정: 명시값 > 신규모드면 조제일수 계산
     let finalEnd = endDate || null;
     if (!finalEnd && target === "new") {
       const days = $("dispense-days").value || 30;
       finalEnd = fmtEndDate(todayPlusDays(days));
     }
-    if (!finalEnd && state.selectedDrugs.has(code)) {
-      finalEnd = state.selectedDrugs.get(code).endDate;  // 기존값 보존
+    // 중복(이미 선택된 약): 종료일을 항상 "더 긴 쪽"으로 연장 (짧아지지 않게)
+    const existing = state.selectedDrugs.get(code);
+    if (existing) {
+      finalEnd = laterEnd(existing.endDate, finalEnd);
     }
     state.selectedDrugs.set(code, { target, endDate: finalEnd });
     renderSelected();
@@ -1593,7 +1609,7 @@
     const tokens = raw.split(/[\s,;]+/).map(t => t.trim()).filter(Boolean);
     if (!tokens.length) { $("bulk-result").textContent = "붙여넣은 코드가 없습니다."; return; }
 
-    let added = 0, dup = 0;
+    let added = 0, extended = 0, dup = 0;
     const unmatched = [];
     const seen = new Set();
     tokens.forEach(tok => {
@@ -1601,12 +1617,17 @@
       seen.add(tok);
       const drug = matchDrugByAnyCode(tok);
       if (!drug) { unmatched.push(tok); return; }
-      if (state.selectedDrugs.has(drug.kd_code)) { dup++; return; }
+      // 중복이어도 건너뛰지 않고 addDrug 호출 → 종료일이 더 길면 자동 연장
+      const before = state.selectedDrugs.get(drug.kd_code);
       addDrug(drug.kd_code, "new");   // 신규: 조제일수 자동 적용
-      added++;
+      const after = state.selectedDrugs.get(drug.kd_code);
+      if (!before) added++;
+      else if (before.endDate !== after.endDate) extended++;  // 종료일 연장됨
+      else dup++;                                              // 완전 동일 → 변화 없음
     });
 
     let msg = `✅ ${added}개 추가`;
+    if (extended) msg += ` · 🔁 종료일 연장 ${extended}`;
     if (dup) msg += ` · 중복 ${dup}`;
     if (unmatched.length) {
       msg += ` · ❌ 매칭 안 됨 ${unmatched.length}: ` +
@@ -1614,7 +1635,7 @@
     }
     $("bulk-result").textContent = msg;
     $("bulk-result").className = "text-xs " + (unmatched.length ? "text-amber-300" : "text-emerald-300");
-    if (added) $("bulk-codes").value = "";
+    if (added || extended) $("bulk-codes").value = "";
   }
 
 

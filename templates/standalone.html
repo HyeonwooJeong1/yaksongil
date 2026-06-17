@@ -1,0 +1,1783 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>다제약물 응급 QR — 약사 단독실행</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>{{QRCODE_JS}}</script>
+  <script>{{JSQR_JS}}</script>
+  <style>
+    .mono { font-family: 'D2Coding', 'Consolas', 'Courier New', monospace; }
+    .scrollbox { max-height: 380px; overflow-y: auto; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+  <!-- 압축된 약물 데이터 (gzip + base64, 빌드 시 삽입) -->
+  <script id="drugs-data"    type="application/octet-stream">{{DRUGS_GZIP_B64}}</script>
+  <!-- 통합 주의정보: 병용금기+노인주의+효능군중복+음식 (DUR 성분정보 + ATC 규칙) -->
+  <script id="cautions-data" type="application/octet-stream">{{CAUTIONS_GZIP_B64}}</script>
+  <!-- 보험코드(제품코드 9자리) → 우리 약물 매핑 (약제급여목록 기반, 전산 프로그램 코드 붙여넣기용) -->
+  <script id="bohum-data"    type="application/octet-stream">{{BOHUM_GZIP_B64}}</script>
+
+  <header class="bg-slate-800 text-white shadow sticky top-0 z-50">
+    <!-- 상단 타이틀 -->
+    <div class="px-6 py-3 flex justify-between items-center border-b border-slate-700">
+      <h1 class="text-lg font-bold">🏥 다제약물 응급 QR <span class="text-sm text-slate-300 ml-2">약국판</span></h1>
+      <div class="flex gap-2">
+        <button id="btn-guide" class="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded">📖 사용 가이드</button>
+        <button id="btn-apikey" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded">🔑 식약처 인증키</button>
+      </div>
+    </div>
+
+    <!-- 바코드 스캔 바 -->
+    <div class="px-6 py-3 flex items-center gap-3 flex-wrap">
+      <!-- 모드 토글 -->
+      <div class="flex rounded overflow-hidden border border-slate-600 text-sm shrink-0">
+        <button id="mode-load" onclick="onClickLoadMode()"
+                class="px-3 py-1.5 bg-blue-600 text-white font-semibold">
+          📦 기존 QR 불러오기
+        </button>
+        <button id="mode-new" onclick="setScanMode('new')"
+                class="px-3 py-1.5 bg-slate-700 text-slate-300 hover:bg-slate-600">
+          ➕ 신규 처방
+        </button>
+      </div>
+
+      <!-- 기존 QR 불러오기 모드: QR 스캔/붙여넣기 입력창 (textarea: QR 내부 줄바꿈 수용) -->
+      <textarea id="scan-input" rows="1" autocomplete="off" wrap="soft"
+             placeholder="기존 응급QR을 바코드 리더기로 스캔 또는 붙여넣기..."
+             class="flex-1 min-w-[200px] bg-slate-700 text-white placeholder-slate-400
+                    border border-slate-600 rounded px-3 py-1.5 text-sm resize-none
+                    focus:outline-none focus:border-blue-400"></textarea>
+
+      <!-- 신규 처방 모드: 전산 프로그램에서 복사한 약물코드 일괄 붙여넣기 -->
+      <div id="bulk-area" class="hidden flex-1 min-w-[260px] flex flex-col gap-1">
+        <textarea id="bulk-codes" rows="2" autocomplete="off"
+             placeholder="전산 프로그램에서 약물코드를 드래그·복사해 붙여넣기 (여러 개: 줄바꿈/탭/콤마 구분)"
+             class="w-full bg-slate-700 text-white placeholder-slate-400 border border-slate-600
+                    rounded px-3 py-1.5 text-sm resize-y focus:outline-none focus:border-amber-400"></textarea>
+        <div class="flex items-center gap-2 flex-wrap">
+          <button onclick="bulkAddByCodes()"
+                  class="bg-amber-500 hover:bg-amber-600 text-white text-sm px-3 py-1 rounded shrink-0">
+            📋 코드 일괄 추가
+          </button>
+          <span id="bulk-result" class="text-xs text-slate-300"></span>
+        </div>
+      </div>
+
+      <!-- 신규 처방 모드: 조제일수 입력 -->
+      <div id="days-input-area" class="hidden flex items-center gap-2 text-sm">
+        <span class="text-slate-300 shrink-0">복용</span>
+        <input id="dispense-days" type="number" min="1" max="365" value="30"
+               class="w-16 bg-slate-700 text-white border border-slate-600 rounded px-2 py-1.5
+                      text-center focus:outline-none focus:border-blue-400" />
+        <span class="text-slate-300 shrink-0">일</span>
+        <span id="end-date-preview" class="text-green-400 text-xs shrink-0"></span>
+      </div>
+    </div>
+
+    <!-- 자동 제외 알림 배너 (접히는 형태) -->
+    <div id="expired-banner" class="hidden bg-amber-700 px-6 py-2 text-sm">
+      <span id="expired-message"></span>
+      <button onclick="$('expired-banner').classList.add('hidden')"
+              class="ml-3 underline text-amber-200 text-xs">닫기</button>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- 환자 정보 (상단 전체 폭) -->
+    <section class="bg-white rounded-lg shadow p-5 lg:col-span-2">
+      <div class="flex items-baseline justify-between mb-3">
+        <h2 class="font-bold text-lg text-slate-700">👤 환자 정보 <span class="text-xs text-slate-400 font-normal">(선택)</span></h2>
+        <span class="text-xs text-amber-600">⚠ 개인정보 보호: 이름은 "김OO" 형태의 익명화 권장</span>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-6 gap-3">
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">이름</label>
+          <input id="p-name" type="text" placeholder="김OO" maxlength="20"
+                 class="w-full border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">성별</label>
+          <select id="p-gender" class="w-full border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500">
+            <option value="">선택</option>
+            <option value="남">남</option>
+            <option value="여">여</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">생년월일</label>
+          <input id="p-birth" type="date" min="1900-01-01"
+                 class="w-full border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">키 (cm)</label>
+          <input id="p-height" type="number" min="0" max="250" placeholder="170"
+                 class="w-full border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">몸무게 (kg)</label>
+          <input id="p-weight" type="number" min="0" max="300" placeholder="65"
+                 class="w-full border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">혈액형 (ABO/Rh)</label>
+          <div class="flex gap-1">
+            <select id="p-blood-abo" class="flex-1 border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500">
+              <option value="">ABO</option>
+              <option value="A">A</option>
+              <option value="B">B</option>
+              <option value="O">O</option>
+              <option value="AB">AB</option>
+            </select>
+            <select id="p-blood-rh" class="flex-1 border rounded px-2 py-1.5 focus:outline-none focus:border-blue-500">
+              <option value="">Rh</option>
+              <option value="+">Rh+</option>
+              <option value="-">Rh-</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 좌측: 약물 마스터 -->
+    <section class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-bold text-lg mb-3 text-slate-700">💊 약물 검색 <span id="cnt-master" class="text-xs text-slate-400 font-normal">(0건)</span></h2>
+      <input id="search" type="text"
+             placeholder="약물명 / 영문 / 코드 입력 후 Enter"
+             class="w-full border rounded px-3 py-2 mb-1 focus:outline-none focus:border-blue-500" />
+      <p class="text-xs text-slate-400 mb-2 px-1">
+        ⏎ <b>Enter</b>로 첫 결과 바로 추가 → 검색창 비워짐 → 연속 입력. 추가한 약은 모두 <b>신규 처방약</b>.
+      </p>
+      <button id="btn-search-external"
+              class="w-full bg-indigo-500 hover:bg-indigo-600 text-white text-sm py-2 rounded mb-3">
+        🌐 식약처(e약은요)에서 검색 (찾는 약물이 없을 시)
+      </button>
+      <div id="drug-list" class="scrollbox border rounded p-2 space-y-1">
+        <p class="text-slate-400 text-sm text-center py-8">⏳ 약물 데이터 압축 해제 중...</p>
+      </div>
+    </section>
+
+    <!-- 우측: 처방 구성 -->
+    <section class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-bold text-lg mb-3 text-slate-700">📋 현재 처방 구성</h2>
+      <div class="mb-4">
+        <h3 class="font-semibold text-slate-600 mb-1">
+          📦 기존 복용약 <span id="cnt-existing" class="text-xs text-slate-400">(0)</span>
+          <span class="text-xs text-slate-400 font-normal">— QR 스캔으로 불러옴</span>
+        </h3>
+        <ul id="existing-list" class="border rounded p-2 min-h-[60px] space-y-1 bg-slate-50"></ul>
+      </div>
+      <div class="mb-4">
+        <h3 class="font-semibold text-slate-600 mb-1">
+          ➕ 신규 처방약 <span id="cnt-new" class="text-xs text-slate-400">(0)</span>
+          <span class="text-xs text-slate-400 font-normal">— 검색 또는 코드 일괄 붙여넣기로 추가</span>
+        </h3>
+        <ul id="new-list" class="border rounded p-2 min-h-[60px] space-y-1 bg-amber-50"></ul>
+      </div>
+    </section>
+
+    <!-- 미리보기 -->
+    <section class="bg-white rounded-lg shadow p-5 lg:col-span-2">
+      <div class="flex justify-between items-center mb-3">
+        <h2 class="font-bold text-lg text-slate-700">📄 응급 텍스트 미리보기</h2>
+        <span id="length-counter" class="text-sm font-semibold text-slate-500">0 / 250자</span>
+      </div>
+      <pre id="preview" class="mono bg-slate-900 text-green-300 rounded p-4 text-sm whitespace-pre-wrap min-h-[120px]">약물을 추가하면 자동으로 미리보기가 표시됩니다.</pre>
+      <div id="error-box" class="hidden mt-3 bg-red-50 border border-red-300 text-red-700 rounded p-3 text-sm"></div>
+      <div class="mt-4 flex gap-3">
+        <button id="btn-qr" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2 rounded shadow disabled:bg-slate-300 disabled:cursor-not-allowed" disabled>
+          QR 코드 생성
+        </button>
+        <button id="btn-clear" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2 rounded">
+          초기화
+        </button>
+      </div>
+    </section>
+
+    <!-- QR 결과 -->
+    <section id="qr-section" class="hidden bg-white rounded-lg shadow p-5 lg:col-span-2">
+      <h2 class="font-bold text-lg mb-3 text-slate-700">🔳 생성된 QR 코드</h2>
+      <div class="flex flex-col lg:flex-row gap-6 items-start">
+        <div class="shrink-0">
+          <img id="qr-image" class="border-4 border-slate-200 rounded" />
+          <div class="mt-3 flex gap-2">
+            <a id="qr-download" download="emergency_qr.png" class="inline-block bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2 rounded shadow text-sm">
+              ⬇ PNG
+            </a>
+            <button onclick="window.print()" class="inline-block bg-slate-600 hover:bg-slate-700 text-white font-semibold px-4 py-2 rounded shadow text-sm">
+              🖨 인쇄
+            </button>
+          </div>
+          <p class="mt-3 text-xs text-slate-500">
+            ※ 2cm × 2cm 이상 출력 권장.<br>
+            ※ 기본 카메라로 스캔 가능.
+          </p>
+        </div>
+
+        <!-- 주의 음식·약 요약 패널 -->
+        <div class="flex-1 min-w-0 w-full">
+          <div id="caution-summary" class="space-y-4"></div>
+        </div>
+      </div>
+
+      <!-- 상세: 어떤 약 때문인지 (하단 펼침) -->
+      <details id="caution-detail" class="mt-5 border-t pt-4 hidden">
+        <summary class="cursor-pointer font-semibold text-slate-600 text-sm">
+          🔎 어떤 약 때문인지 자세히 보기
+        </summary>
+        <div id="caution-detail-body" class="mt-3 space-y-4 text-sm"></div>
+      </details>
+    </section>
+  </main>
+
+  <!-- 외부 검색 모달 -->
+  <div id="external-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-6">
+    <div class="bg-white rounded-lg shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+      <div class="flex justify-between items-center p-5 border-b">
+        <h3 class="font-bold text-lg text-slate-700">🌐 식약처 e약은요 검색</h3>
+        <button onclick="closeExternalModal()" class="text-slate-400 hover:text-slate-700 text-2xl">✕</button>
+      </div>
+      <div class="p-5 border-b">
+        <div class="flex gap-2">
+          <input id="external-query" type="text" placeholder="약물명 입력"
+                 class="flex-1 border rounded px-3 py-2 focus:outline-none focus:border-indigo-500" />
+          <button onclick="searchExternal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded">검색</button>
+        </div>
+      </div>
+      <div id="external-results" class="overflow-y-auto p-5 space-y-3 flex-1">
+        <p class="text-slate-400 text-sm text-center py-8">약물명을 입력하고 검색하세요.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 인증키 입력 모달 -->
+  <div id="apikey-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-6">
+    <div class="bg-white rounded-lg shadow-2xl max-w-md w-full p-6">
+      <h3 class="font-bold text-lg mb-3">🔑 식약처 e약은요 인증키</h3>
+      <p class="text-sm text-slate-600 mb-3">
+        외부 약물 검색을 사용하려면 인증키가 필요합니다.<br>
+        <a href="https://www.data.go.kr/data/15075057/openapi.do" target="_blank" class="text-blue-600 underline text-xs">공공데이터포털에서 발급받기</a>
+      </p>
+      <input id="apikey-input" type="text" placeholder="인증키 (Encoding 또는 Decoding)"
+             class="w-full border rounded px-3 py-2 mb-3 mono text-xs" />
+      <p class="text-xs text-slate-500 mb-3">
+        ⚠ 인증키는 이 브라우저의 localStorage에만 저장되며, 본인 PC를 떠나지 않습니다.
+      </p>
+      <div class="flex gap-2 justify-end">
+        <button onclick="closeApikeyModal()" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">취소</button>
+        <button onclick="saveApiKey()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 사용 가이드 슬라이드 패널 -->
+  <div id="guide-overlay" class="hidden fixed inset-0 bg-black/40 z-[60]" onclick="closeGuide()"></div>
+  <aside id="guide-panel"
+         class="fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-2xl z-[70]
+                translate-x-full transition-transform duration-300 overflow-y-auto">
+    <div class="sticky top-0 bg-blue-600 text-white px-5 py-4 flex justify-between items-center">
+      <h2 class="font-bold text-lg">📖 약국용 사용 가이드</h2>
+      <button onclick="closeGuide()" class="text-2xl leading-none">✕</button>
+    </div>
+    <div class="p-5 space-y-5 text-sm text-slate-700">
+
+      <div class="bg-blue-50 rounded-xl p-4">
+        <h3 class="font-bold text-blue-800 mb-1">이 프로그램은?</h3>
+        <p>노인 다제약물 환자의 복용약을 <b>응급용 QR 스티커</b>로 만듭니다.
+           환자 스마트폰·약봉투에 붙이면, 응급 시 의료진이 카메라로 스캔해 즉시 확인합니다.</p>
+      </div>
+
+      <div>
+        <h3 class="font-bold text-slate-800 mb-2">🟦 처음 방문 환자 (신규)</h3>
+        <ol class="list-decimal ml-5 space-y-1.5">
+          <li><b>환자 정보</b> 입력 (이름은 <code>김OO</code> 익명 권장)</li>
+          <li>좌측 <b>약물 검색창</b>에 약 이름 입력 → <b>Enter</b>로 추가</li>
+          <li>상단 <b>복용 일수</b> 입력 → 종료일 자동 계산</li>
+          <li><b>QR 코드 생성</b> 버튼 → <b>인쇄</b>로 스티커 출력</li>
+        </ol>
+      </div>
+
+      <div>
+        <h3 class="font-bold text-slate-800 mb-2">🟩 재방문 환자 (기존 QR 있음)</h3>
+        <ol class="list-decimal ml-5 space-y-1.5">
+          <li>상단 <b>📦 기존 QR 불러오기</b> 클릭</li>
+          <li>환자의 기존 QR을 <b>카메라</b>·<b>리더기</b>·<b>이미지</b> 중 아무거나로 스캔</li>
+          <li>→ 기존 약 자동 로드, <b>복용 종료된 약은 자동 제외</b>(알림 표시)</li>
+          <li>오늘 새 약은 검색창으로 추가</li>
+          <li><b>QR 재생성</b> → 새 스티커 출력</li>
+        </ol>
+      </div>
+
+      <div>
+        <h3 class="font-bold text-slate-800 mb-2">🔎 약을 못 찾을 때</h3>
+        <p>좌측 <b>🌐 식약처에서 검색</b> 버튼 → 인증키 입력 후 외부 검색.
+           (인증키는 본인 PC에만 저장)</p>
+      </div>
+
+      <div>
+        <h3 class="font-bold text-slate-800 mb-2">⚠️ 주의 음식·약 요약</h3>
+        <p>QR 생성 시 우측에 <b>조심할 음식·병용금기 약</b>이 자동 정리됩니다.
+           "어떤 약 때문인지"는 하단에서 펼쳐 볼 수 있습니다.</p>
+      </div>
+
+      <div class="bg-amber-50 rounded-xl p-4 text-xs">
+        <h3 class="font-bold text-amber-800 mb-1">💡 알아두기</h3>
+        <ul class="list-disc ml-4 space-y-1">
+          <li>이 프로그램은 <b>서버·인터넷 없이</b> 동작합니다 (외부 검색만 인터넷 필요).</li>
+          <li>환자 정보는 어디에도 저장·전송되지 않습니다.</li>
+          <li>QR은 200~250자 한도. 초과 시 약을 줄이세요.</li>
+        </ul>
+      </div>
+
+      <p class="text-center text-xs text-slate-400 pt-3 border-t">
+        다제약물 응급 QR 시스템 · 참고용 정보
+      </p>
+    </div>
+  </aside>
+
+  <!-- 카메라 QR 스캔 모달 -->
+  <div id="camera-modal" class="hidden fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center p-6">
+    <div class="bg-white rounded-lg shadow-2xl max-w-lg w-full p-5">
+      <div class="flex justify-between items-center mb-3">
+        <h3 class="font-bold text-lg text-slate-700">📷 기존 응급QR 스캔</h3>
+        <button onclick="stopCameraScan()" class="text-slate-400 hover:text-slate-700 text-2xl">✕</button>
+      </div>
+      <p class="text-sm text-slate-500 mb-3">
+        QR을 카메라에 비추거나, <b>바코드 리더기로 스캔</b>해도 됩니다. (둘 중 먼저 인식되는 대로 처리)
+      </p>
+      <div class="relative bg-black rounded-lg overflow-hidden" style="aspect-ratio: 4/3;">
+        <video id="cam-video" class="w-full h-full object-cover" playsinline></video>
+        <canvas id="cam-canvas" class="hidden"></canvas>
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div class="w-48 h-48 border-4 border-white/80 rounded-2xl"></div>
+        </div>
+      </div>
+      <p id="cam-status" class="text-center text-sm text-slate-500 mt-3">카메라 준비 중...</p>
+      <div class="mt-3 text-xs text-slate-400 text-center">
+        💡 카메라가 안 되면 리더기 입력창에 직접 스캔하거나, 아래 이미지 업로드를 쓰세요.
+      </div>
+      <div class="mt-2 flex justify-center">
+        <button onclick="$('cam-file').click()" class="text-xs bg-slate-200 hover:bg-slate-300 px-3 py-1.5 rounded">
+          🖼 QR 이미지 파일 업로드
+        </button>
+        <input id="cam-file" type="file" accept="image/*" class="hidden" />
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ============================================================
+  // 상태
+  // ============================================================
+  const state = {
+    allDrugs:       [],
+    drugMap:        new Map(),
+    // Map: kd_code → { target: 'existing'|'new', endDate: 'YY.MM.DD'|null }
+    selectedDrugs:  new Map(),
+    externalResults: [],
+    lastResults:    [],       // 마지막 검색 결과 (엔터 추가용)
+    scanMode:       "load",   // "load" | "new"
+    cautions:       null,     // 성분코드 → 주의정보 (병용금기/노인주의/효능군중복)
+    drugIndex:      null,     // 약물명(정규화) → [성분코드]
+    foodIndex:      null,     // 약물명(정규화) → [음식]
+    bohumIndex:     null,     // 보험코드(제품코드 9자리) → 대표 kd_code
+    patient: { name: "", gender: "", birth: "", height: "", weight: "",
+               bloodAbo: "", bloodRh: "" },
+  };
+  const MAX_LENGTH = 250;
+  const $ = (id) => document.getElementById(id);
+
+
+  // ============================================================
+  // 압축 해제 + 초기화
+  // ============================================================
+  async function decompressJSON(elemId) {
+    const b64 = $(elemId).textContent.trim();
+    if (!b64) return {};
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("gzip"));
+    const text = await new Response(stream).text();
+    return JSON.parse(text);
+  }
+
+
+  async function init() {
+    try {
+      state.allDrugs = await decompressJSON("drugs-data");
+      state.allDrugs.forEach(d => state.drugMap.set(d.kd_code, d));
+      $("cnt-master").textContent = `(${state.allDrugs.length.toLocaleString()}건)`;
+      doSearch();
+    } catch (e) {
+      $("drug-list").innerHTML = `<p class="text-red-600 text-sm py-4">❌ 데이터 로딩 실패: ${e.message}</p>`;
+      console.error(e);
+    }
+    // 통합 주의정보 로드 (비차단)
+    try {
+      const data = await decompressJSON("cautions-data");
+      state.cautions  = data.cautions   || {};
+      // 약물명 인덱스를 정규화 키로 다시 구축 (검색 견고화)
+      state.drugIndex = buildNormIndex(data.drug_index || {});
+      state.foodIndex = buildNormIndex(data.food_index || {});
+      console.log(`[OK] 주의정보: 성분 ${Object.keys(state.cautions).length}, ` +
+                  `약물 ${Object.keys(data.drug_index||{}).length}, 음식 ${Object.keys(data.food_index||{}).length}`);
+    } catch (e) {
+      console.warn("주의정보 로드 실패:", e);
+    }
+    // 보험코드 매핑 로드 (비차단) — 전산 프로그램 코드 일괄 붙여넣기 매칭용
+    try {
+      state.bohumIndex = await decompressJSON("bohum-data");
+      console.log(`[OK] 보험코드 매핑: ${Object.keys(state.bohumIndex || {}).length}건`);
+    } catch (e) {
+      console.warn("보험코드 매핑 로드 실패:", e);
+      state.bohumIndex = {};
+    }
+  }
+
+
+  // ============================================================
+  // 통합 주의정보 lookup (생성기/리더기 공용)
+  // ============================================================
+  // 약물명 인덱스 → 정규화 키 인덱스 (exact + 경량 정규화)
+  function buildNormIndex(dataMap) {
+    const norm = {};
+    for (const key in dataMap) {
+      const k = lightNorm(key);
+      if (!norm[k]) norm[k] = dataMap[key];
+    }
+    return { exact: dataMap, norm };
+  }
+
+  function lightNorm(s) {
+    return (s || "")
+      .replace(/\s+/g, "")
+      .replace(/[()[\]]/g, "")
+      .replace(/\d+(\.\d+)?(mg|mcg|g|밀리그램|밀리|단위|IU|%)?/gi, "")
+      .trim();
+  }
+
+  function idxLookup(name, idx) {
+    if (!name || !idx) return null;
+    // QR의 약물명과 drug_index 키는 동일한 short_name이므로 정확/정규화 매칭이면 충분.
+    // (부분매칭은 '비','조코' 같은 절단 키가 다른 약에 오탐을 일으켜 제거함)
+    if (idx.exact[name]) return idx.exact[name];
+    const k = lightNorm(name);
+    if (idx.norm[k]) return idx.norm[k];
+    return null;
+  }
+
+  // 약물명 → 통합 주의정보 (병용금기/노인주의/효능군중복 합산)
+  function getCautionInfo(drugName) {
+    const codes = idxLookup(drugName, state.drugIndex) || [];
+    const result = { contra: [], elderly: [], duplicate: [] };
+    const seenContra = new Set();
+    for (const code of codes) {
+      const info = (state.cautions || {})[code];
+      if (!info) continue;
+      for (const c of (info.contra || [])) {
+        if (!seenContra.has(c.name)) { seenContra.add(c.name); result.contra.push(c); }
+      }
+      if (info.elderly && !result.elderly.includes(info.elderly)) result.elderly.push(info.elderly);
+      if (info.duplicate && !result.duplicate.includes(info.duplicate)) result.duplicate.push(info.duplicate);
+    }
+    return result;
+  }
+
+  // 약물명 → 음식 [{label, emoji, reason, level, source}]
+  function getFoodInfo(drugName) {
+    return idxLookup(drugName, state.foodIndex) || [];
+  }
+
+
+  // ============================================================
+  // 검색 (클라이언트 측)
+  // ============================================================
+  let searchTimer = null;
+  function scheduleSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 250);
+  }
+
+
+  function doSearch() {
+    const q = $("search").value.trim().toLowerCase();
+    let results;
+    if (!q) {
+      // 검색어 없으면 warning 우선 50건
+      results = state.allDrugs.filter(d => d.category === "warning").slice(0, 50);
+      if (results.length < 50) {
+        results = results.concat(
+          state.allDrugs.filter(d => d.category === "normal").slice(0, 50 - results.length)
+        );
+      }
+    } else {
+      // 콤마/공백 분리한 여러 검색어 (OR), 각각 여러 컬럼 LIKE
+      const terms = q.split(/[,\s]+/).filter(Boolean);
+      const cols = ["short_name", "full_name", "kd_code", "ingredient_code", "english_name"];
+      results = state.allDrugs.filter(d => {
+        return terms.some(term =>
+          cols.some(c => (d[c] || "").toLowerCase().includes(term))
+        );
+      }).slice(0, 50);
+    }
+    renderResults(results, q);
+  }
+
+
+  function renderResults(drugs, query) {
+    state.lastResults = drugs;  // 엔터로 첫 결과 추가용
+    const list = $("drug-list");
+    if (drugs.length === 0) {
+      list.innerHTML = query
+        ? `<p class="text-slate-400 text-sm text-center py-8">'${query}' 검색 결과 없음.<br>"🌐 식약처에서 검색"으로 외부에서 찾아보세요.</p>`
+        : `<p class="text-slate-400 text-sm text-center py-8">약물명을 검색하세요.</p>`;
+      return;
+    }
+    list.innerHTML = drugs.map((d, i) => {
+      const tag = d.category === "warning"
+        ? `<span class="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded ml-1">주의:${d.risk_keyword}</span>`
+        : `<span class="text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded ml-1">${d.indication || "기타"}</span>`;
+      const sub = [];
+      if (d.english_name)    sub.push(`<span class="text-slate-500">${d.english_name}</span>`);
+      if (d.ingredient_code) sub.push(`<code class="text-slate-400">${d.ingredient_code}</code>`);
+      const already = state.selectedDrugs.has(d.kd_code);
+      // 첫 결과(i===0)는 엔터 대상임을 시각적으로 표시
+      const firstHint = i === 0 ? '<span class="text-[10px] text-blue-400 ml-1">⏎</span>' : "";
+      return `
+        <div class="flex items-center justify-between p-2 hover:bg-slate-50 rounded ${i === 0 ? "bg-blue-50/40" : ""}">
+          <div class="flex-1 min-w-0">
+            <span class="font-medium">${d.short_name}</span>
+            ${tag}${firstHint}
+            ${sub.length ? `<div class="text-xs mt-0.5">${sub.join(" · ")}</div>` : ""}
+          </div>
+          <button onclick="addDrug('${d.kd_code}', 'new')"
+                  class="text-xs px-3 py-1 rounded shrink-0 ${already
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-amber-200 hover:bg-amber-300"}">
+            ${already ? "✓ 추가됨" : "+ 추가"}
+          </button>
+        </div>
+      `;
+    }).join("");
+  }
+
+
+  // 엔터: 검색 결과 첫 약물 추가 (연속 입력)
+  function addFirstResult() {
+    if (state.lastResults && state.lastResults.length) {
+      addDrug(state.lastResults[0].kd_code, "new");
+      $("search").value = "";   // 검색창 비우기
+      doSearch();               // 리스트 초기화
+      $("search").focus();      // 포커스 유지 → 바로 다음 약 입력
+    }
+  }
+
+
+  // ============================================================
+  // 약물 선택
+  // ============================================================
+  // ============================================================
+  // 날짜 유틸
+  // ============================================================
+  function todayPlusDays(days) {
+    const d = new Date();
+    d.setDate(d.getDate() + Number(days || 0));
+    return d;
+  }
+
+  // Date → "YY.MM.DD"
+  function fmtEndDate(date) {
+    const yy = String(date.getFullYear()).slice(2);
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yy}.${mm}.${dd}`;
+  }
+
+  // "YY.MM.DD" → Date (비교용). 파싱 실패 시 null
+  function parseEndDate(s) {
+    const m = (s || "").match(/^(\d{2})\.(\d{2})\.(\d{2})$/);
+    if (!m) return null;
+    const yy = 2000 + Number(m[1]);
+    return new Date(yy, Number(m[2]) - 1, Number(m[3]));
+  }
+
+  // 종료일이 오늘보다 이전이면 만료
+  function isExpired(endDateStr) {
+    const d = parseEndDate(endDateStr);
+    if (!d) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return d < today;
+  }
+
+
+  // ============================================================
+  // 약물 추가/제거 (selectedDrugs Map 기반)
+  // ============================================================
+  function addDrug(code, target, endDate) {
+    // endDate 결정: 명시값 > 신규모드면 조제일수 계산 > 기존값 유지
+    let finalEnd = endDate || null;
+    if (!finalEnd && target === "new") {
+      const days = $("dispense-days").value || 30;
+      finalEnd = fmtEndDate(todayPlusDays(days));
+    }
+    if (!finalEnd && state.selectedDrugs.has(code)) {
+      finalEnd = state.selectedDrugs.get(code).endDate;  // 기존값 보존
+    }
+    state.selectedDrugs.set(code, { target, endDate: finalEnd });
+    renderSelected();
+    updatePreview();
+    // 검색 결과의 "추가됨" 표시 갱신 (리스트 다시 안 그리고 가볍게)
+    if (state.lastResults && state.lastResults.length) {
+      renderResults(state.lastResults, $("search").value.trim());
+    }
+  }
+
+
+  function removeDrug(code) {
+    state.selectedDrugs.delete(code);
+    renderSelected();
+    updatePreview();
+  }
+
+
+  function updateDrugEndDate(code, yymmdd) {
+    const entry = state.selectedDrugs.get(code);
+    if (entry) {
+      entry.endDate = yymmdd || null;
+      updatePreview();
+    }
+  }
+
+
+  function renderSelected() {
+    const renderGroup = (target, listId, countId) => {
+      const entries = [...state.selectedDrugs.entries()]
+        .filter(([_, v]) => v.target === target);
+      $(countId).textContent = `(${entries.length})`;
+
+      if (entries.length === 0) {
+        $(listId).innerHTML = '<li class="text-xs text-slate-400 p-1">없음</li>';
+        return;
+      }
+      $(listId).innerHTML = entries.map(([code, entry]) => {
+        const d = state.drugMap.get(code);
+        if (!d) return "";
+        const tag = d.category === "warning"
+          ? `<span class="text-xs text-red-600">⚠ ${d.risk_keyword}</span>`
+          : `<span class="text-xs text-slate-500">${d.indication || ""}</span>`;
+        const expired = isExpired(entry.endDate);
+        // 종료일 input (YYYY-MM-DD value로 변환)
+        const dateVal = entry.endDate ? `20${entry.endDate.replace(/\./g, "-")}` : "";
+        // 약물 코드 표시: 표준코드(13자리) + 주성분코드(9자리, 있을 때만)
+        const stdCode = (d.kd_code || "").replace(/^HIRA_/, "");
+        const ic = d.ingredient_code || "";
+        const ingCode = (ic && ic !== stdCode && !/^\d{13}$/.test(ic)) ? ic : "";
+        const codeStr = [stdCode && `표준 ${stdCode}`, ingCode && `성분 ${ingCode}`]
+                          .filter(Boolean).join(" · ");
+        return `
+          <li class="flex items-center justify-between p-1.5 rounded gap-2 ${expired ? "bg-red-50" : "hover:bg-white"}">
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-sm">
+                ${d.short_name} ${tag}
+                ${expired ? '<span class="text-xs text-red-500 font-bold">만료</span>' : ""}
+              </div>
+              ${codeStr ? `<div class="text-[10px] text-slate-400 font-mono truncate" title="${codeStr}">${codeStr}</div>` : ""}
+            </div>
+            <input type="date" value="${dateVal}"
+                   onchange="onDateChange('${code}', this.value)"
+                   class="text-xs border rounded px-1 py-0.5 w-32 shrink-0 ${expired ? "border-red-400 text-red-600" : ""}" />
+            <button onclick="removeDrug('${code}')" class="text-red-500 hover:text-red-700 font-bold shrink-0">✕</button>
+          </li>
+        `;
+      }).join("");
+    };
+    renderGroup("existing", "existing-list", "cnt-existing");
+    renderGroup("new",      "new-list",      "cnt-new");
+  }
+
+
+  // date input (YYYY-MM-DD) → "YY.MM.DD" 저장
+  function onDateChange(code, isoDate) {
+    if (!isoDate) { updateDrugEndDate(code, null); return; }
+    const [y, m, d] = isoDate.split("-");
+    updateDrugEndDate(code, `${y.slice(2)}.${m}.${d}`);
+  }
+
+
+  // ============================================================
+  // 미리보기 + 250자 검증 + 종료일 표기
+  // ============================================================
+  function calcAge(birthStr) {
+    if (!birthStr) return null;
+    const b = new Date(birthStr);
+    if (isNaN(b.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - b.getFullYear();
+    const m = today.getMonth() - b.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < b.getDate())) age--;
+    return age;
+  }
+
+
+  function formatPatientLine() {
+    const p = state.patient;
+    const parts = [];
+    if (p.name)   parts.push(p.name);
+    if (p.gender) parts.push(p.gender);
+    if (p.birth) {
+      const age = calcAge(p.birth);
+      parts.push(age !== null ? `${p.birth}(${age})` : p.birth);
+    }
+    if (p.height || p.weight) {
+      parts.push(`${p.height || "?"}/${p.weight || "?"}`);
+    }
+    if (p.bloodAbo && p.bloodRh) {
+      parts.push(`${p.bloodAbo}${p.bloodRh}`);
+    } else if (p.bloodAbo) {
+      parts.push(`${p.bloodAbo}형`);
+    } else if (p.bloodRh) {
+      parts.push(`Rh${p.bloodRh}`);
+    }
+    return parts.length ? `${parts.join(" ")}\n` : "";
+  }
+
+
+  // 약물 1개 → "아스피린(출혈)[26.08.01]" (종료일 없으면 날짜 생략)
+  function fmtDrugWithEnd(d, endDate) {
+    const tag = d.category === "warning" ? d.risk_keyword : (d.indication || "");
+    const base = tag ? `${d.short_name}(${tag})` : d.short_name;
+    return endDate ? `${base}[${endDate}]` : base;
+  }
+
+
+  function formatEmergencyText(items) {
+    // items: [{ drug, endDate }]
+    const warning = items.filter(x => x.drug.category === "warning");
+    const normal  = items.filter(x => x.drug.category === "normal");
+
+    const warningStr = warning.map(x => fmtDrugWithEnd(x.drug, x.endDate)).join(", ");
+    const normalStr  = normal.map(x => fmtDrugWithEnd(x.drug, x.endDate)).join(", ");
+
+    const lines = [];
+    const patient = formatPatientLine();
+    if (patient) lines.push(patient.trimEnd());
+    if (warning.length) lines.push(`주의: ${warningStr}`);
+    if (normal.length)  lines.push(`일반: ${normalStr}`);
+    const text = lines.join("\n");
+
+    return { text, normalCount: normal.length };
+  }
+
+
+  // selectedDrugs Map → [{ drug, endDate, target }]
+  function getSelectedItems() {
+    const items = [];
+    for (const [code, entry] of state.selectedDrugs.entries()) {
+      const drug = state.drugMap.get(code);
+      if (drug) items.push({ drug, endDate: entry.endDate, target: entry.target });
+    }
+    return items;
+  }
+
+
+  function updatePreview() {
+    const items = getSelectedItems();
+    const hasPatient = Object.values(state.patient).some(v => v);
+
+    if (items.length === 0 && !hasPatient) {
+      $("preview").textContent = "약물을 추가하거나 환자 정보를 입력하면 미리보기가 표시됩니다.";
+      $("length-counter").textContent = `0 / ${MAX_LENGTH}자`;
+      $("length-counter").className = "text-sm font-semibold text-slate-500";
+      $("error-box").classList.add("hidden");
+      $("btn-qr").disabled = true;
+      return;
+    }
+    if (items.length === 0) {
+      $("preview").textContent = formatPatientLine() + "(약물 미선택)";
+      $("length-counter").textContent = "약물 추가 필요";
+      $("length-counter").className = "text-sm font-semibold text-amber-600";
+      $("error-box").classList.add("hidden");
+      $("btn-qr").disabled = true;
+      return;
+    }
+
+    const { text, normalCount } = formatEmergencyText(items);
+    $("preview").textContent = text;
+    // QR 실제 페이로드 = 한글 텍스트 + 복원용 데이터 블록. 스캔 안정성은 이 길이에 좌우됨.
+    const qrLen = items.length ? (text + "\n" + buildMachineBlock(items)).length : text.length;
+    $("length-counter").textContent =
+      `${text.length} / ${MAX_LENGTH}자` + (text.length > MAX_LENGTH ? " (초과)" : "") + ` · QR ${qrLen}자`;
+
+    if (text.length > MAX_LENGTH) {
+      $("length-counter").className = "text-sm font-semibold text-red-600";
+      $("error-box").classList.remove("hidden");
+      $("error-box").textContent = `${text.length}자로 ${MAX_LENGTH}자 제한 초과. 일반 약물 ${normalCount}개 중 일부를 제거하세요.`;
+      $("btn-qr").disabled = true;
+    } else {
+      $("length-counter").className = text.length > MAX_LENGTH - 20
+        ? "text-sm font-semibold text-orange-600"
+        : "text-sm font-semibold text-emerald-600";
+      $("error-box").classList.add("hidden");
+      $("btn-qr").disabled = false;
+    }
+  }
+
+
+  // ============================================================
+  // QR 생성 (클라이언트, qrcode.js)
+  // ============================================================
+  // qrcode-generator는 charCodeAt(i)의 하위 8비트만 쓰기 때문에
+  // 한글(>255)은 잘림. UTF-8 바이트로 풀어서 단일 바이트 문자열로 만든 후 전달.
+  function utf8ToByteString(text) {
+    const bytes = new TextEncoder().encode(text);  // UTF-8 바이트 배열
+    let result = "";
+    for (let i = 0; i < bytes.length; i++) {
+      result += String.fromCharCode(bytes[i]);
+    }
+    return result;
+  }
+
+
+  // ============================================================
+  // 복원용 데이터 블록 — 하드웨어 QR 리더기 호환
+  //   문제: 키보드 흉내(HID) 리더기는 한글을 못 친다. 게다가 받는 PC의 한글 IME가
+  //         켜져 있으면 영문자마저 자모로 바뀐다. → 블록을 "숫자와 일부 기호"로만
+  //         구성해 어떤 리더기·IME 환경에서도 안 깨지게 한다. (영문자 전면 배제)
+  //   포맷:  *#*1;<환자>;<약물>
+  //     환자: birth8.sex.height.weight.abo.rh.name(유니코드 코드포인트, '-' 구분)
+  //           sex 남=1·여=2, abo A=1·B=2·O=3·AB=4, rh +=1·-=2 (없으면 0/빈값)
+  //     약물: <표준코드(숫자)>.<종료YYMMDD> 를 ','로 연결 (종료일 없으면 코드만)
+  //   한글 텍스트는 그대로 두고 이 블록만 덧붙임 → 폰 카메라의 한글 표시엔 무영향.
+  // ============================================================
+  const BLOCK_RE = /\*#\*([0-9.,;\-]+)/;   // 앞쪽 한글이 깨져도 이 블록만 추출
+
+  function encodeNameCodepoints(name) {
+    return name ? [...name].map(ch => ch.codePointAt(0)).join("-") : "";
+  }
+
+  function buildMachineBlock(items) {
+    const p = state.patient;
+    const birth8 = (p.birth || "").replace(/\D/g, "").slice(0, 8);
+    const sex = p.gender === "남" ? "1" : p.gender === "여" ? "2" : "0";
+    const abo = ({ A: "1", B: "2", O: "3", AB: "4" })[p.bloodAbo] || "0";
+    const rh  = p.bloodRh === "+" ? "1" : p.bloodRh === "-" ? "2" : "0";
+    const patientStr = [birth8, sex, p.height || "", p.weight || "", abo, rh,
+                        encodeNameCodepoints(p.name)].join(".");
+
+    const drugStr = items.map(({ drug, endDate }) => {
+      // HIRA 표준코드(숫자)만 블록에 포함 → 숫자라 리더기·IME에 안전.
+      // DUR/MFDS 등 영문 섞인 코드는 폰 한글 표시엔 남지만 리더기 복원 대상에선 제외(희소).
+      const code = drug.kd_code.startsWith("HIRA_") ? drug.kd_code.slice(5) : drug.kd_code;
+      if (!/^\d+$/.test(code)) return null;
+      const end = endDate ? endDate.replace(/\D/g, "").slice(0, 6) : "";
+      return end ? `${code}.${end}` : code;
+    }).filter(Boolean).join(",");
+
+    return `*#*1;${patientStr};${drugStr}`;
+  }
+
+  function decodeMachineBlock(raw) {
+    if (!raw) return null;
+    const m = raw.match(BLOCK_RE);
+    if (!m) return null;
+    const [ver, patientStr = "", drugStr = ""] = m[1].replace(/\s+/g, "").split(";");
+    if (ver !== "1") return null;
+
+    // 환자 복원
+    const [birth8, sex, h, w, abo, rh, names] = patientStr.split(".");
+    const patient = { name: "", gender: "", birth: "", height: "", weight: "",
+                      bloodAbo: "", bloodRh: "" };
+    if (birth8 && birth8.length === 8)
+      patient.birth = `${birth8.slice(0, 4)}-${birth8.slice(4, 6)}-${birth8.slice(6, 8)}`;
+    if (sex === "1") patient.gender = "남"; else if (sex === "2") patient.gender = "여";
+    if (h) patient.height = h;
+    if (w) patient.weight = w;
+    patient.bloodAbo = ({ "1": "A", "2": "B", "3": "O", "4": "AB" })[abo] || "";
+    if (rh === "1") patient.bloodRh = "+"; else if (rh === "2") patient.bloodRh = "-";
+    if (names) {
+      try {
+        patient.name = names.split("-").filter(Boolean)
+          .map(c => String.fromCodePoint(parseInt(c, 10))).join("");
+      } catch (e) { /* 손상된 코드포인트 무시 */ }
+    }
+
+    // 약물 복원
+    const drugs = [];
+    drugStr.split(",").filter(Boolean).forEach(tok => {
+      const [code, end] = tok.split(".");
+      if (!code) return;
+      drugs.push({
+        code,
+        endDate: (end && end.length === 6)
+          ? `${end.slice(0, 2)}.${end.slice(2, 4)}.${end.slice(4, 6)}` : null,
+      });
+    });
+
+    return { patient, drugs };
+  }
+
+  // 디코딩된 환자정보를 state + 입력폼에 반영
+  function applyPatient(p) {
+    state.patient = { ...state.patient, ...p };
+    const map = { "p-name": "name", "p-gender": "gender", "p-birth": "birth",
+                  "p-height": "height", "p-weight": "weight",
+                  "p-blood-abo": "bloodAbo", "p-blood-rh": "bloodRh" };
+    for (const [elId, key] of Object.entries(map)) {
+      if (p[key] != null && $(elId)) $(elId).value = p[key];
+    }
+  }
+
+
+  function generateQR() {
+    const items = getSelectedItems();
+    const { text } = formatEmergencyText(items);
+    // 한글 텍스트(폰 카메라용) + 복원용 데이터 블록(하드웨어 리더기용)
+    const payload = items.length ? `${text}\n${buildMachineBlock(items)}` : text;
+    try {
+      const qr = qrcode(0, "M");
+      qr.addData(utf8ToByteString(payload), "Byte");  // UTF-8 한글 + ASCII 데이터 블록
+      qr.make();
+      const url = qr.createDataURL(10, 4);  // 셀 10px, 인식 안정성↑
+      $("qr-image").src = url;
+      $("qr-download").href = url;
+      renderCautionSummary(items.map(x => x.drug));  // 주의 요약 패널
+      $("qr-section").classList.remove("hidden");
+      $("qr-section").scrollIntoView({ behavior: "smooth" });
+    } catch (e) {
+      alert("QR 생성 실패: " + e.message);
+      console.error(e);
+    }
+  }
+
+
+  // ============================================================
+  // 주의 음식·약 요약 렌더링 (생성기/리더기 공용 출력 포맷)
+  //   - 입력: drug 객체 배열 (short_name 보유)
+  //   - 음식/약을 모아서 중복 제거 후 요약 표시
+  //   - 상세(어떤 약 때문인지)는 별도 펼침 영역
+  // ============================================================
+  function computeCautions(drugs) {
+    const foods = new Map();        // label → {emoji, reason, level, source, drugs:Set}
+    const contraDrugs = new Map();  // 금기약 → {reason, causedBy:Set}
+    const elderly = new Map();      // 내약 → 노인주의 사유
+    const duplicate = new Map();    // 효능군명 → Set(내약)
+    const internalPairs = [];
+    const myNames = new Set(drugs.map(d => d.short_name));
+
+    drugs.forEach(d => {
+      // 음식
+      for (const f of getFoodInfo(d.short_name)) {
+        if (!foods.has(f.label))
+          foods.set(f.label, { emoji: f.emoji || "", reason: f.reason || "",
+                               level: f.level || "mid", source: f.source || "", drugs: new Set() });
+        foods.get(f.label).drugs.add(d.short_name);
+      }
+      // 병용금기 / 노인주의 / 효능군중복
+      const info = getCautionInfo(d.short_name);
+      info.contra.forEach(c => {
+        if (!contraDrugs.has(c.name)) contraDrugs.set(c.name, { reason: c.reason || "", causedBy: new Set() });
+        contraDrugs.get(c.name).causedBy.add(d.short_name);
+        if (myNames.has(c.name)) {
+          const pair = [d.short_name, c.name].sort().join(" + ");
+          if (!internalPairs.some(p => p.pair === pair)) internalPairs.push({ pair, reason: c.reason || "" });
+        }
+      });
+      info.elderly.forEach(e => elderly.set(d.short_name, e));
+      info.duplicate.forEach(dup => {
+        if (!duplicate.has(dup)) duplicate.set(dup, new Set());
+        duplicate.get(dup).add(d.short_name);
+      });
+    });
+    return { foods, contraDrugs, elderly, duplicate, internalPairs };
+  }
+
+
+  function renderCautionSummary(drugs) {
+    if (!state.cautions) {
+      $("caution-summary").innerHTML =
+        `<p class="text-sm text-slate-400">주의 데이터가 로드되지 않았습니다.</p>`;
+      $("caution-detail").classList.add("hidden");
+      return;
+    }
+    const { foods, contraDrugs, elderly, duplicate, internalPairs } = computeCautions(drugs);
+    let html = "";
+
+    // 0) 내 약끼리 병용금기 (최우선)
+    if (internalPairs.length) {
+      html += `
+        <div class="bg-red-50 border-2 border-red-300 rounded-xl p-4">
+          <h3 class="font-bold text-red-700 mb-2">🚨 복용 약물 간 병용금기</h3>
+          <ul class="space-y-1 text-sm">
+            ${internalPairs.map(p => `<li class="text-red-800">⛔ <b>${p.pair}</b>${p.reason ? ` — ${p.reason}` : ""}</li>`).join("")}
+          </ul>
+          <p class="text-xs text-red-500 mt-2">함께 복용 시 위험. 반드시 의사/약사 확인.</p>
+        </div>`;
+    }
+
+    // 1) 효능군 중복 (다제약물 핵심)
+    const dupActive = [...duplicate.entries()].filter(([_, s]) => s.size >= 2);
+    if (dupActive.length) {
+      html += `
+        <div class="bg-purple-50 border border-purple-200 rounded-xl p-4">
+          <h3 class="font-bold text-purple-700 mb-2">🔁 같은 계열 약 중복</h3>
+          <ul class="space-y-1 text-sm">
+            ${dupActive.map(([name, s]) => `<li><b>${name}</b>: ${[...s].join(", ")}</li>`).join("")}
+          </ul>
+          <p class="text-xs text-purple-500 mt-2">같은 효과 약을 중복 복용 중 — 용량 확인 필요.</p>
+        </div>`;
+    }
+
+    // 2) 노인주의
+    if (elderly.size) {
+      html += `
+        <div class="bg-rose-50 border border-rose-200 rounded-xl p-4">
+          <h3 class="font-bold text-rose-700 mb-2">👵 노인 주의 약물 <span class="text-xs font-normal text-slate-400">(${elderly.size})</span></h3>
+          <ul class="space-y-1 text-sm">
+            ${[...elderly.entries()].map(([name, why]) => `<li><b>${name}</b> <span class="text-xs text-slate-500">— ${(why||"").slice(0,40)}</span></li>`).join("")}
+          </ul>
+        </div>`;
+    }
+
+    // 3) 조심할 음식 (출처 표시)
+    if (foods.size) {
+      const foodItems = [...foods.entries()].map(([label, v]) =>
+        `<li class="flex items-start gap-2">
+           <span class="text-lg shrink-0">${v.emoji}</span>
+           <div><b>${label}</b> <span class="text-slate-500 text-xs">— ${v.reason}</span>
+             ${v.source ? `<span class="text-[10px] text-slate-300 ml-1">[${v.source}]</span>` : ""}</div>
+         </li>`).join("");
+      html += `
+        <div class="bg-orange-50 border border-orange-200 rounded-xl p-4">
+          <h3 class="font-bold text-orange-700 mb-2">🍎 조심해야 할 음식 <span class="text-xs font-normal text-slate-400">(${foods.size})</span></h3>
+          <ul class="space-y-2 text-sm">${foodItems}</ul>
+        </div>`;
+    }
+
+    // 4) 함께 먹으면 안 되는 약 (이름 칩)
+    if (contraDrugs.size) {
+      const names = [...contraDrugs.keys()];
+      const shown = names.slice(0, 40);
+      html += `
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <h3 class="font-bold text-amber-700 mb-2">⚠️ 함께 먹으면 안 되는 약 <span class="text-xs font-normal text-slate-400">(${names.length})</span></h3>
+          <div class="flex flex-wrap gap-1.5">
+            ${shown.map(n => `<span class="text-xs bg-white border border-amber-300 text-amber-800 px-2 py-0.5 rounded-full">${n}</span>`).join("")}
+            ${names.length > shown.length ? `<span class="text-xs text-slate-400">외 ${names.length - shown.length}건</span>` : ""}
+          </div>
+        </div>`;
+    }
+
+    if (!html) html = `<p class="text-sm text-slate-400">이 약물들에 대한 주의 정보가 데이터에 없습니다.</p>`;
+    $("caution-summary").innerHTML = html;
+    renderCautionDetail(foods, contraDrugs);
+  }
+
+
+  function renderCautionDetail(foods, contraDrugs) {
+    if (!foods.size && !contraDrugs.size) {
+      $("caution-detail").classList.add("hidden");
+      return;
+    }
+    let html = "";
+    if (foods.size) {
+      html += `<div><h4 class="font-semibold text-orange-700 mb-1">🍎 음식별 원인 약물</h4><ul class="space-y-1">`;
+      for (const [label, v] of foods.entries())
+        html += `<li>${v.emoji} <b>${label}</b> ← ${[...v.drugs].join(", ")}${v.source ? ` <span class="text-[10px] text-slate-400">[${v.source}]</span>` : ""}</li>`;
+      html += `</ul></div>`;
+    }
+    if (contraDrugs.size) {
+      html += `<div class="mt-3"><h4 class="font-semibold text-amber-700 mb-1">⚠️ 금기약별 원인 약물</h4><ul class="space-y-1">`;
+      for (const [name, v] of contraDrugs.entries())
+        html += `<li>⛔ <b>${name}</b> ← ${[...v.causedBy].join(", ")}${v.reason ? `<br><span class="text-xs text-slate-500 ml-4">${v.reason}</span>` : ""}</li>`;
+      html += `</ul></div>`;
+    }
+    $("caution-detail-body").innerHTML = html;
+    $("caution-detail").classList.remove("hidden");
+  }
+
+
+  function clearAll() {
+    state.selectedDrugs.clear();
+    state.patient = { name: "", gender: "", birth: "", height: "", weight: "",
+                      bloodAbo: "", bloodRh: "" };
+    ["p-name", "p-gender", "p-birth", "p-height", "p-weight",
+     "p-blood-abo", "p-blood-rh"]
+      .forEach(id => $(id).value = "");
+    renderSelected();
+    updatePreview();
+    $("qr-section").classList.add("hidden");
+  }
+
+
+  function bindPatientFields() {
+    const map = {
+      "p-name":       "name",
+      "p-gender":     "gender",
+      "p-birth":      "birth",
+      "p-height":     "height",
+      "p-weight":     "weight",
+      "p-blood-abo":  "bloodAbo",
+      "p-blood-rh":   "bloodRh",
+    };
+    for (const [elId, key] of Object.entries(map)) {
+      $(elId).addEventListener("input",  () => { state.patient[key] = $(elId).value.trim(); updatePreview(); });
+      $(elId).addEventListener("change", () => { state.patient[key] = $(elId).value.trim(); updatePreview(); });
+    }
+  }
+
+
+  // ============================================================
+  // 인증키 관리
+  // ============================================================
+  // 사용 가이드 슬라이드 패널
+  function openGuide() {
+    $("guide-overlay").classList.remove("hidden");
+    $("guide-panel").classList.remove("translate-x-full");
+  }
+  function closeGuide() {
+    $("guide-overlay").classList.add("hidden");
+    $("guide-panel").classList.add("translate-x-full");
+  }
+
+
+  function openApikeyModal() {
+    $("apikey-input").value = localStorage.getItem("mfds_api_key") || "";
+    $("apikey-modal").classList.remove("hidden");
+    $("apikey-input").focus();
+  }
+  function closeApikeyModal() { $("apikey-modal").classList.add("hidden"); }
+  function saveApiKey() {
+    const key = $("apikey-input").value.trim();
+    if (!key) {
+      alert("인증키를 입력하세요.");
+      return;
+    }
+    localStorage.setItem("mfds_api_key", key);
+    closeApikeyModal();
+    alert("✅ 인증키 저장 완료. 이제 외부 검색을 사용할 수 있습니다.");
+  }
+
+
+  // ============================================================
+  // 외부 검색 (e약은요)
+  // ============================================================
+  function openExternalModal() {
+    const q = $("search").value.trim();
+    if (q) $("external-query").value = q;
+    $("external-modal").classList.remove("hidden");
+    $("external-query").focus();
+    if (q) searchExternal();
+  }
+  function closeExternalModal() { $("external-modal").classList.add("hidden"); }
+
+
+  async function searchExternal() {
+    const q = $("external-query").value.trim();
+    const box = $("external-results");
+    if (!q) {
+      box.innerHTML = '<p class="text-slate-400 text-sm text-center py-8">검색어를 입력하세요.</p>';
+      return;
+    }
+    const apiKey = localStorage.getItem("mfds_api_key");
+    if (!apiKey) {
+      box.innerHTML = `
+        <div class="bg-amber-50 border border-amber-300 rounded p-4 text-sm">
+          ⚠ 식약처 인증키가 설정되지 않았습니다.<br>
+          우측 상단의 <strong>"🔑 인증키 설정"</strong>에서 먼저 등록하세요.
+        </div>`;
+      return;
+    }
+
+    box.innerHTML = '<p class="text-slate-400 text-sm text-center py-8">⏳ 식약처 API 호출 중...</p>';
+
+    const url = `https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList`
+              + `?serviceKey=${encodeURIComponent(apiKey)}`
+              + `&itemName=${encodeURIComponent(q)}`
+              + `&type=json&numOfRows=5&pageNo=1`;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const items = (data.body?.items) || [];
+      const results = (Array.isArray(items) ? items : [items]).map(i => ({
+        name:        i.itemName || "",
+        company:     i.entpName || "",
+        efficacy:    i.efcyQesitm || "",
+        caution:     i.atpnQesitm || "",
+        interaction: i.intrcQesitm || "",
+        side_effect: i.seQesitm || "",
+      }));
+      state.externalResults = results;
+      renderExternalResults(results, q);
+    } catch (e) {
+      box.innerHTML = `
+        <div class="bg-red-50 border border-red-300 rounded p-4 text-sm">
+          ❌ ${e.message}<br>
+          <strong>CORS 정책</strong>으로 브라우저에서 직접 호출이 막혔을 수 있습니다.<br>
+          <a href="https://nedrug.mfds.go.kr/searchDrug" target="_blank" class="text-blue-600 underline">
+            식약처 의약품안전나라에서 직접 검색하기 →
+          </a>
+        </div>`;
+    }
+  }
+
+
+  function renderExternalResults(results, q) {
+    const box = $("external-results");
+    if (results.length === 0) {
+      box.innerHTML = `<p class="text-slate-400 text-sm py-4">'${q}' 검색 결과 없음.</p>`;
+      return;
+    }
+    box.innerHTML = results.map((d, i) => `
+      <div class="border rounded p-4 hover:border-indigo-300">
+        <h4 class="font-semibold text-slate-800">${d.name}</h4>
+        <p class="text-xs text-slate-500 mb-2">${d.company}</p>
+        ${d.efficacy ? `<details class="mt-2 text-sm"><summary class="cursor-pointer text-blue-600">▸ 효능</summary><p class="mt-1 text-slate-700 whitespace-pre-wrap">${d.efficacy}</p></details>` : ""}
+        ${d.caution ? `<details class="mt-2 text-sm"><summary class="cursor-pointer text-red-600">▸ 주의사항</summary><p class="mt-1 text-slate-700 whitespace-pre-wrap">${d.caution}</p></details>` : ""}
+        ${d.interaction ? `<details class="mt-2 text-sm"><summary class="cursor-pointer text-amber-600">▸ 상호작용</summary><p class="mt-1 text-slate-700 whitespace-pre-wrap">${d.interaction}</p></details>` : ""}
+        ${d.side_effect ? `<details class="mt-2 text-sm"><summary class="cursor-pointer text-orange-600">▸ 부작용</summary><p class="mt-1 text-slate-700 whitespace-pre-wrap">${d.side_effect}</p></details>` : ""}
+        <div class="mt-3 border-t pt-3 bg-slate-50 -mx-4 -mb-4 px-4 pb-4 rounded-b">
+          <p class="text-xs text-slate-600 mb-2">💾 이 세션 마스터에 추가:</p>
+          <div class="grid grid-cols-12 gap-2 text-sm">
+            <select id="cat-${i}" onchange="toggleKeywordField(${i})" class="col-span-3 border rounded px-2 py-1">
+              <option value="normal">일반</option>
+              <option value="warning">주의</option>
+            </select>
+            <input id="kw-${i}" type="text" placeholder="적응증 (예: 고혈압)" class="col-span-6 border rounded px-2 py-1" />
+            <button onclick="addToMaster(${i})" class="col-span-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded">+ 추가</button>
+          </div>
+        </div>
+      </div>
+    `).join("");
+  }
+
+
+  function toggleKeywordField(i) {
+    const cat = $(`cat-${i}`).value;
+    $(`kw-${i}`).placeholder = cat === "warning" ? "위험 키워드 (예: 출혈)" : "적응증 (예: 고혈압)";
+  }
+
+
+  function addToMaster(i) {
+    const result = state.externalResults[i];
+    if (!result) return;
+    const category = $(`cat-${i}`).value;
+    const keyword  = $(`kw-${i}`).value.trim();
+    if (!keyword) {
+      alert(category === "warning" ? "위험 키워드를 입력하세요." : "적응증을 입력하세요.");
+      return;
+    }
+    // 임시 KD코드 생성 (해시 없이 단순화)
+    const code = `EXT_${Date.now()}_${i}`;
+    const drug = {
+      kd_code: code,
+      short_name: result.name,
+      full_name: result.name,
+      category,
+      risk_keyword: category === "warning" ? keyword : null,
+      indication:   category === "normal"  ? keyword : null,
+    };
+    state.allDrugs.push(drug);
+    state.drugMap.set(code, drug);
+    $("cnt-master").textContent = `(${state.allDrugs.length.toLocaleString()}건)`;
+    // 외부 검색으로 추가한 약은 바로 처방에 신규로 넣고 모달 닫기
+    addDrug(code, "new");
+    closeExternalModal();
+    flashScanResult(`✅ ${result.name} 추가`, "bg-emerald-600");
+  }
+
+
+  // ============================================================
+  // 바코드 스캔 모드 + 워크플로
+  // ============================================================
+  function setScanMode(mode) {
+    state.scanMode = mode;
+    const load = $("mode-load"), nw = $("mode-new");
+    if (mode === "load") {
+      load.className = "px-3 py-1.5 bg-blue-600 text-white font-semibold";
+      nw.className   = "px-3 py-1.5 bg-slate-700 text-slate-300 hover:bg-slate-600";
+      $("days-input-area").classList.add("hidden");
+      $("bulk-area").classList.add("hidden");
+      $("scan-input").classList.remove("hidden");
+      $("scan-input").placeholder = "기존 응급QR을 바코드 리더기로 스캔 또는 붙여넣기...";
+      $("scan-input").focus();
+    } else {
+      nw.className   = "px-3 py-1.5 bg-amber-500 text-white font-semibold";
+      load.className = "px-3 py-1.5 bg-slate-700 text-slate-300 hover:bg-slate-600";
+      $("days-input-area").classList.remove("hidden");
+      $("bulk-area").classList.remove("hidden");
+      $("scan-input").classList.add("hidden");
+      updateEndDatePreview();
+      $("bulk-codes").focus();
+    }
+  }
+
+
+  function updateEndDatePreview() {
+    const days = $("dispense-days").value || 30;
+    $("end-date-preview").textContent = `→ ${fmtEndDate(todayPlusDays(days))} 종료`;
+  }
+
+
+  // ============================================================
+  // 기존 QR 불러오기: 카메라 + 리더기 입력 동시 수신
+  // ============================================================
+  function onClickLoadMode() {
+    setScanMode("load");
+    startCameraScan();   // 카메라도 동시에 켬 (리더기 입력창도 살아있음)
+  }
+
+
+  const cam = { stream: null, scanning: false, rafId: null };
+
+  async function startCameraScan() {
+    // file:// 등 비보안 컨텍스트면 카메라 불가 → 안내만
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      $("camera-modal").classList.remove("hidden");
+      $("cam-status").innerHTML =
+        "⚠ 이 환경에서는 카메라를 쓸 수 없습니다 (HTTPS 필요).<br>" +
+        "리더기 입력창에 스캔하거나, 아래 <b>이미지 업로드</b>를 사용하세요.";
+      return;
+    }
+
+    $("camera-modal").classList.remove("hidden");
+    $("cam-status").textContent = "카메라 접근 중...";
+    try {
+      cam.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" }, audio: false,
+      });
+      const v = $("cam-video");
+      v.srcObject = cam.stream;
+      v.setAttribute("playsinline", true);
+      await v.play();
+      cam.scanning = true;
+      $("cam-status").textContent = "QR을 비춰주세요...";
+      cam.rafId = requestAnimationFrame(camScanLoop);
+    } catch (e) {
+      $("cam-status").innerHTML =
+        "❌ 카메라 접근 실패: " + (e.message || e.name) + "<br>" +
+        "리더기 입력창 또는 이미지 업로드를 사용하세요.";
+    }
+  }
+
+
+  function stopCameraScan() {
+    cam.scanning = false;
+    if (cam.rafId) cancelAnimationFrame(cam.rafId);
+    if (cam.stream) { cam.stream.getTracks().forEach(t => t.stop()); cam.stream = null; }
+    $("cam-video").srcObject = null;
+    $("camera-modal").classList.add("hidden");
+  }
+
+
+  function camScanLoop() {
+    if (!cam.scanning) return;
+    const v = $("cam-video"), c = $("cam-canvas");
+    if (v.readyState === v.HAVE_ENOUGH_DATA) {
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      const img = ctx.getImageData(0, 0, c.width, c.height);
+      const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+      if (code && code.data) {
+        const text = code.data;
+        stopCameraScan();
+        loadFromQRText(text);
+        flashScanResult("✅ QR 인식 완료", "bg-emerald-600");
+        return;
+      }
+    }
+    cam.rafId = requestAnimationFrame(camScanLoop);
+  }
+
+
+  // 이미지 파일에서 QR 추출 (카메라 안 될 때 대안)
+  function decodeQRFromImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 1500;
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (Math.max(w, h) > maxDim) {
+          const s = maxDim / Math.max(w, h); w = Math.round(w*s); h = Math.round(h*s);
+        }
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        const img2 = c.getContext("2d").getImageData(0, 0, w, h);
+        const code = jsQR(img2.data, img2.width, img2.height, { inversionAttempts: "attemptBoth" });
+        URL.revokeObjectURL(img.src);
+        code && code.data ? resolve(code.data) : reject(new Error("QR을 찾을 수 없습니다."));
+      };
+      img.onerror = () => reject(new Error("이미지 로드 실패"));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+
+  async function handleCamFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const text = await decodeQRFromImage(file);
+      stopCameraScan();
+      loadFromQRText(text);
+      flashScanResult("✅ QR 인식 완료", "bg-emerald-600");
+    } catch (err) {
+      $("cam-status").textContent = "❌ " + err.message;
+    }
+  }
+
+
+  // 스캔 입력 처리 — 리더기 종료문자(suffix)에 의존하지 않는 견고한 방식.
+  //
+  // 핵심 문제:
+  //   1) 리더기마다 종료문자가 다름 (Enter / Tab / 없음 / CRLF)
+  //   2) QR 내부에 줄바꿈이 있어, "Enter=처리"로 하면 첫 줄에서 잘림
+  //      → textarea로 받아 내부 줄바꿈을 그대로 보존
+  // 해결: 디바운스 — 리더기는 데이터를 수~수십 ms 안에 한 번에 쏘고 멈춤.
+  //      마지막 입력 후 IDLE_MS 동안 추가 입력이 없으면 = 스캔 완료로 판단.
+  //      종료문자가 Enter든 Tab이든 없든 모두 동일하게 동작.
+  let scanIdleTimer = null;
+  const SCAN_IDLE_MS = 150;   // 리더기 1회 전송 완료 대기. 사람 연속타이핑보다 짧음
+
+  function onScanInput() {
+    clearTimeout(scanIdleTimer);
+    scanIdleTimer = setTimeout(() => {
+      // 입력이 멈춤 = 스캔 완료로 간주
+      flushScanInput();
+    }, SCAN_IDLE_MS);
+  }
+
+  function flushScanInput() {
+    clearTimeout(scanIdleTimer);
+    // textarea라 줄바꿈 포함 가능. trim은 양끝만.
+    const raw = $("scan-input").value.replace(/[\r\n\t]+$/, "").trim();
+    if (!raw) { $("scan-input").value = ""; return; }
+
+    // 너무 짧으면(사람이 한두 글자 친 것) 무시하지 않고 처리하되,
+    // 모드별 분기
+    // scan-input은 '기존 QR 불러오기' 전용. 신규 처방은 코드 일괄 붙여넣기 박스 사용.
+    loadFromQRText(raw);
+    $("scan-input").value = "";
+    $("scan-input").focus();
+  }
+
+
+  // 복원용 데이터 블록(숫자코드) 기반 로드 — 하드웨어 리더기로 한글이 깨져도 정확.
+  function loadFromBlock(block) {
+    applyPatient(block.patient);
+
+    let loaded = 0, expired = 0;
+    const expiredNames = [];
+    block.drugs.forEach(({ code, endDate }) => {
+      const drug = state.drugMap.get(`HIRA_${code}`) || findDrugByBarcode(code);
+      if (!drug) return;
+      if (endDate && isExpired(endDate)) {
+        expired++;
+        expiredNames.push(`${drug.short_name}(${endDate})`);
+        return;  // 만료 약물 자동 제외
+      }
+      state.selectedDrugs.set(drug.kd_code, { target: "existing", endDate });
+      loaded++;
+    });
+
+    renderSelected();
+    updatePreview();
+
+    if (expired > 0) {
+      $("expired-banner").classList.remove("hidden");
+      $("expired-message").innerHTML =
+        `⏰ 복용 종료된 약물 ${expired}건 자동 제외: <b>${expiredNames.join(", ")}</b>`;
+    } else {
+      $("expired-banner").classList.add("hidden");
+    }
+    if (loaded === 0 && expired === 0) {
+      alert("불러온 약물이 DB에 매칭되지 않았습니다.");
+    }
+  }
+
+
+  // 모드 1: 기존 QR 텍스트 파싱 → 약물 로드 (만료 자동 제외)
+  function loadFromQRText(qrText) {
+    // ── 하드웨어 리더기 호환 (최우선) ──
+    // 키보드형 리더기는 한글을 못 치므로, 한글이 깨졌더라도 숫자·기호로 된
+    // 복원용 데이터 블록(*#*…)이 있으면 그것을 우선 사용해 코드로 정확히 복원한다.
+    const block = decodeMachineBlock(qrText);
+    if (block && block.drugs.length) { loadFromBlock(block); return; }
+
+    // ── 블록이 없는(구) QR 또는 한글이 온전한 이미지/카메라 로드: 한글 이름 기반 파싱 ──
+    // QR 안에 줄바꿈 포함. 바코드 리더기가 개행을 공백/특수문자로 바꿀 수 있어
+    // "주의:"/"일반:" 토큰 기준으로도 분리 시도.
+    const parsed = parseLoadedQR(qrText);
+    if (!parsed.warning.length && !parsed.normal.length) {
+      alert("QR에서 약물 정보를 찾지 못했습니다.\n형식을 확인하세요.");
+      return;
+    }
+
+    // 환자 정보 복원
+    if (parsed.patient) restorePatientFromText(parsed.patient);
+
+    let loaded = 0, expired = 0;
+    const expiredNames = [];
+    [...parsed.warning, ...parsed.normal].forEach(item => {
+      const drug = findDrugByName(item.name);
+      if (!drug) return;
+      if (item.endDate && isExpired(item.endDate)) {
+        expired++;
+        expiredNames.push(`${item.name}(${item.endDate})`);
+        return;  // 만료 약물 자동 제외
+      }
+      state.selectedDrugs.set(drug.kd_code, { target: "existing", endDate: item.endDate });
+      loaded++;
+    });
+
+    renderSelected();
+    updatePreview();
+
+    if (expired > 0) {
+      $("expired-banner").classList.remove("hidden");
+      $("expired-message").innerHTML =
+        `⏰ 복용 종료된 약물 ${expired}건 자동 제외: <b>${expiredNames.join(", ")}</b>`;
+    } else {
+      $("expired-banner").classList.add("hidden");
+    }
+    if (loaded === 0 && expired === 0) {
+      alert("불러온 약물이 DB에 매칭되지 않았습니다.");
+    }
+  }
+
+
+  // 모드 2: 전산 프로그램에서 복사한 약물코드를 한 토큰씩 DB 매칭 (다중 코드 체계 대응)
+  //   우리 DB가 가진 코드: 표준코드(13자리 바코드, 8806…) + 주성분코드(9자리, 예 168402ATB) + 약물명.
+  //   ※ 보험코드(청구/EDI 9자리)는 우리 DB에 없음 → 그 체계면 매칭 실패로 리포트됨(호환성 진단).
+  function matchDrugByAnyCode(tok) {
+    tok = (tok || "").trim();
+    if (!tok) return null;
+    const digits = tok.replace(/\D/g, "");
+    // 0) 보험코드(제품코드, 9자리) → 약제급여목록 매핑 → 우리 약물 (전산 프로그램의 주 코드)
+    if (state.bohumIndex && digits.length === 9) {
+      const kd = state.bohumIndex[digits];
+      if (kd) { const d = state.drugMap.get(kd); if (d) return d; }
+    }
+    // 1) 표준코드(13자리 바코드) 등 숫자코드 → kd_code 정확 매칭
+    if (digits.length >= 10) {
+      const d = state.drugMap.get("HIRA_" + digits);
+      if (d) return d;
+    }
+    // 2) 주성분코드(6자리숫자+제형 2~3자, 예 168402ATB) → 같은 성분 대표 1건
+    if (/^\d{6}[A-Za-z0-9]{2,3}$/.test(tok)) {
+      const d = state.allDrugs.find(x => (x.ingredient_code || "") === tok)
+             || state.allDrugs.find(x => (x.ingredient_code || "").startsWith(tok.slice(0, 6)));
+      if (d) return d;
+    }
+    // 3) 약물명(한글/영문)
+    const byName = findDrugByName(tok);
+    if (byName) return byName;
+    // 4) 그 밖의 숫자(짧은 표준코드 변형 등) — 부분 매칭 fallback
+    if (digits) { const d = findDrugByBarcode(digits); if (d) return d; }
+    return null;
+  }
+
+  // 붙여넣은 약물코드들을 한꺼번에 매칭 → 신규 처방약으로 추가 + 매칭 결과 리포트
+  function bulkAddByCodes() {
+    const raw = $("bulk-codes").value || "";
+    // 드래그-붙여넣기 구분자: 줄바꿈/탭/콤마/세미콜론/공백
+    const tokens = raw.split(/[\s,;]+/).map(t => t.trim()).filter(Boolean);
+    if (!tokens.length) { $("bulk-result").textContent = "붙여넣은 코드가 없습니다."; return; }
+
+    let added = 0, dup = 0;
+    const unmatched = [];
+    const seen = new Set();
+    tokens.forEach(tok => {
+      if (seen.has(tok)) return;
+      seen.add(tok);
+      const drug = matchDrugByAnyCode(tok);
+      if (!drug) { unmatched.push(tok); return; }
+      if (state.selectedDrugs.has(drug.kd_code)) { dup++; return; }
+      addDrug(drug.kd_code, "new");   // 신규: 조제일수 자동 적용
+      added++;
+    });
+
+    let msg = `✅ ${added}개 추가`;
+    if (dup) msg += ` · 중복 ${dup}`;
+    if (unmatched.length) {
+      msg += ` · ❌ 매칭 안 됨 ${unmatched.length}: ` +
+             unmatched.slice(0, 8).join(", ") + (unmatched.length > 8 ? " …" : "");
+    }
+    $("bulk-result").textContent = msg;
+    $("bulk-result").className = "text-xs " + (unmatched.length ? "text-amber-300" : "text-emerald-300");
+    if (added) $("bulk-codes").value = "";
+  }
+
+
+  // 스캔 결과 토스트 (입력창 옆에 잠깐 표시)
+  let scanFlashTimer = null;
+  function flashScanResult(msg, bgClass) {
+    let el = $("scan-flash");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "scan-flash";
+      el.className = "fixed bottom-6 right-6 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm font-semibold";
+      document.body.appendChild(el);
+    }
+    el.className = `fixed bottom-6 right-6 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm font-semibold ${bgClass}`;
+    el.textContent = msg;
+    el.style.opacity = "1";
+    clearTimeout(scanFlashTimer);
+    scanFlashTimer = setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.5s"; }, 1500);
+  }
+
+
+  // 표준코드(숫자)로 DB 매칭 — kd_code는 "HIRA_<표준코드>" 형태
+  function findDrugByBarcode(code) {
+    if (!code) return null;
+    // 정확 매칭 우선
+    let drug = state.drugMap.get(`HIRA_${code}`)
+            || state.drugMap.get(code)
+            || state.drugMap.get(`HIRA_${code} `);  // 혹시 공백 포함
+    if (drug) return drug;
+    // ingredient_code 또는 kd_code 부분 매칭
+    return state.allDrugs.find(d =>
+      (d.kd_code || "").includes(code) ||
+      (d.ingredient_code || "").startsWith(code.slice(0, 9))
+    ) || null;
+  }
+
+
+  // 약물명으로 매칭 (QR 로드 시)
+  function findDrugByName(name) {
+    if (!name) return null;
+    const exact = state.allDrugs.find(d => d.short_name === name);
+    if (exact) return exact;
+    // 부분 매칭
+    return state.allDrugs.find(d =>
+      d.short_name && (d.short_name.includes(name) || name.includes(d.short_name))
+    ) || null;
+  }
+
+
+  // 로드된 QR 텍스트 파싱 → { patient, warning:[{name,endDate}], normal:[...] }
+  function parseLoadedQR(text) {
+    const result = { patient: "", warning: [], normal: [] };
+    // 줄바꿈 또는 "주의:"/"일반:" 토큰 기준 분리
+    let normalized = text
+      .replace(/주의\s*:/g, "\n주의:")
+      .replace(/일반\s*:/g, "\n일반:");
+    const lines = normalized.split(/\r?\n/);
+    for (const line of lines) {
+      const l = line.trim();
+      if (!l) continue;
+      if (l.startsWith("*#*")) continue;        // 복원용 데이터 블록 — 환자정보로 오인 금지
+      if (l.startsWith("주의:")) {
+        result.warning = parseLoadedDrugList(l.replace(/^주의\s*:\s*/, ""));
+      } else if (l.startsWith("일반:")) {
+        result.normal = parseLoadedDrugList(l.replace(/^일반\s*:\s*/, ""));
+      } else if (!l.startsWith("[") && !result.patient) {
+        result.patient = l;
+      }
+    }
+    return result;
+  }
+
+
+  // "아스피린(출혈)[26.08.01], 아마릴(저혈당)" → [{name, tag, endDate}]
+  function parseLoadedDrugList(s) {
+    if (!s || s === "없음") return [];
+    // 콤마로 분리하되 괄호/대괄호 안의 콤마는 보호
+    const parts = [];
+    let depth = 0, cur = "";
+    for (const ch of s) {
+      if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      if (ch === "," && depth === 0) { parts.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    if (cur.trim()) parts.push(cur);
+
+    return parts.map(p => {
+      const m = p.trim().match(/^(.+?)\s*(?:\(([^)]*)\))?\s*(?:\[([^\]]*)\])?\s*$/);
+      if (!m) return null;
+      return { name: m[1].trim(), tag: (m[2] || "").trim(), endDate: (m[3] || "").trim() || null };
+    }).filter(Boolean);
+  }
+
+
+  // 환자 텍스트 → 폼 복원 (best-effort)
+  function restorePatientFromText(patientStr) {
+    // "김OO 남 1958-03-15(67) 170/65 A+" 형태
+    const tokens = patientStr.split(/\s+/);
+    tokens.forEach(t => {
+      if (t === "남" || t === "여") {
+        state.patient.gender = t; $("p-gender").value = t;
+      } else if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+        const date = t.slice(0, 10);
+        state.patient.birth = date; $("p-birth").value = date;
+      } else if (/^\d+\/\d+$/.test(t)) {
+        const [h, w] = t.split("/");
+        if (h !== "?") { state.patient.height = h; $("p-height").value = h; }
+        if (w !== "?") { state.patient.weight = w; $("p-weight").value = w; }
+      } else if (/^(A|B|O|AB)[+-]$/.test(t)) {
+        const abo = t.slice(0, -1), rh = t.slice(-1);
+        state.patient.bloodAbo = abo; $("p-blood-abo").value = abo;
+        state.patient.bloodRh = rh;   $("p-blood-rh").value = rh;
+      } else if (!/[()\/]/.test(t) && !state.patient.name) {
+        state.patient.name = t; $("p-name").value = t;
+      }
+    });
+  }
+
+
+  // ============================================================
+  // 이벤트 바인딩
+  // ============================================================
+  document.addEventListener("DOMContentLoaded", () => {
+    init();
+    bindPatientFields();
+    setScanMode("load");
+    $("search").addEventListener("input", scheduleSearch);
+    $("search").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); addFirstResult(); }
+    });
+    $("btn-qr").addEventListener("click", generateQR);
+    $("btn-clear").addEventListener("click", clearAll);
+    $("btn-search-external").addEventListener("click", openExternalModal);
+    $("btn-apikey").addEventListener("click", openApikeyModal);
+    $("btn-guide").addEventListener("click", openGuide);
+
+    // 바코드 스캔 입력: 종료문자(suffix) 기종차 + QR 내부 줄바꿈 모두 대응
+    //   - input 이벤트마다 디바운스 타이머 리셋 → 입력 멈추면 자동 처리
+    //   - Tab은 종료문자로 쓰는 기종이 있어 즉시 flush (단, 데이터엔 Tab 거의 없음)
+    //   - Enter는 데이터 내부에도 들어오므로 즉시 처리하지 않고 디바운스에 맡김
+    $("scan-input").addEventListener("input", onScanInput);
+    $("scan-input").addEventListener("keydown", (e) => {
+      if (e.key === "Tab") { e.preventDefault(); flushScanInput(); }
+      // Ctrl+Enter = 수동 강제 처리 (사람이 직접 붙여넣고 확정할 때)
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); flushScanInput(); }
+    });
+    $("dispense-days").addEventListener("input", updateEndDatePreview);
+    $("cam-file").addEventListener("change", handleCamFile);
+    $("camera-modal").addEventListener("click", (e) => {
+      if (e.target.id === "camera-modal") stopCameraScan();
+    });
+
+    $("external-modal").addEventListener("click", (e) => {
+      if (e.target.id === "external-modal") closeExternalModal();
+    });
+    $("apikey-modal").addEventListener("click", (e) => {
+      if (e.target.id === "apikey-modal") closeApikeyModal();
+    });
+    $("external-query").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") searchExternal();
+    });
+  });
+  </script>
+</body>
+</html>

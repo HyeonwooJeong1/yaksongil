@@ -1,0 +1,23 @@
+.env
+output/*.png
+__pycache__/
+*.pyc
+*.pyo
+drug_master.db
+.vscode/
+.idea/
+*.egg-info/
+venv/
+.venv/
+build/
+dist/
+*.zip
+templates/_qrcode.min.js
+
+# 대용량 원천 데이터 (빌드 입력일 뿐 — 저장소 불필요, GitHub 100MB 한도 회피)
+# 결과물 docs/ 에 이미 임베드되므로 원본 CSV/XLSX는 올리지 않음.
+건강보험심사평가원_*.csv
+건강보험심사평가원_의약품안전사용서비스*/
+*.xlsx
+# 개발용 화면 캡처
+화면 캡처*.png

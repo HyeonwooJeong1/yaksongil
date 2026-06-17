@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>다제약물 응급 QR — 약사 대시보드</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .mono { font-family: 'D2Coding', 'Consolas', 'Courier New', monospace; }
+    .scrollbox { max-height: 380px; overflow-y: auto; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+  <header class="bg-slate-800 text-white px-6 py-4 shadow">
+    <h1 class="text-xl font-bold">🏥 다제약물 응급 QR — 약사 대시보드 <span class="text-sm text-slate-300 ml-2">v0.1 MVP</span></h1>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- 좌측: 약물 마스터 목록 -->
+    <section class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-bold text-lg mb-3 text-slate-700">💊 약물 마스터 <span id="cnt-master" class="text-xs text-slate-400 font-normal">(0)</span></h2>
+      <input id="search" type="text"
+             placeholder="약물명 / 영문 / 코드 (콤마로 여러 개)"
+             class="w-full border rounded px-3 py-2 mb-1 focus:outline-none focus:border-blue-500" />
+      <p class="text-xs text-slate-400 mb-2 px-1">
+        예: <code>아스피린, 와파린</code> 또는 <code>warfarin, aspirin</code> 또는 <code>KD001</code>
+      </p>
+      <button id="btn-search-external"
+              class="w-full bg-indigo-500 hover:bg-indigo-600 text-white text-sm py-2 rounded mb-3">
+        🌐 식약처(e약은요)에서 검색
+      </button>
+      <div id="drug-list" class="scrollbox border rounded p-2 space-y-1">
+        <p class="text-slate-400 text-sm text-center py-8">불러오는 중...</p>
+      </div>
+    </section>
+
+    <!-- 우측: 처방 구성 -->
+    <section class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-bold text-lg mb-3 text-slate-700">📋 현재 처방 구성</h2>
+
+      <div class="mb-4">
+        <div class="flex justify-between items-center mb-1">
+          <h3 class="font-semibold text-slate-600">기존 복용약 <span id="cnt-existing" class="text-xs text-slate-400">(0)</span></h3>
+        </div>
+        <ul id="existing-list" class="border rounded p-2 min-h-[60px] space-y-1 bg-slate-50"></ul>
+      </div>
+
+      <div class="mb-4">
+        <div class="flex justify-between items-center mb-1">
+          <h3 class="font-semibold text-slate-600">신규 처방약 <span id="cnt-new" class="text-xs text-slate-400">(0)</span></h3>
+        </div>
+        <ul id="new-list" class="border rounded p-2 min-h-[60px] space-y-1 bg-amber-50"></ul>
+      </div>
+    </section>
+
+    <!-- 미리보기 -->
+    <section class="bg-white rounded-lg shadow p-5 lg:col-span-2">
+      <div class="flex justify-between items-center mb-3">
+        <h2 class="font-bold text-lg text-slate-700">📄 응급 텍스트 미리보기</h2>
+        <span id="length-counter" class="text-sm font-semibold text-slate-500">0 / 200자</span>
+      </div>
+      <pre id="preview" class="mono bg-slate-900 text-green-300 rounded p-4 text-sm whitespace-pre-wrap min-h-[120px]">약물을 추가하면 자동으로 미리보기가 표시됩니다.</pre>
+      <div id="error-box" class="hidden mt-3 bg-red-50 border border-red-300 text-red-700 rounded p-3 text-sm"></div>
+      <div class="mt-4 flex gap-3">
+        <button id="btn-qr" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2 rounded shadow disabled:bg-slate-300 disabled:cursor-not-allowed" disabled>
+          QR 코드 생성
+        </button>
+        <button id="btn-clear" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2 rounded">
+          초기화
+        </button>
+      </div>
+    </section>
+
+    <!-- QR 결과 -->
+    <section id="qr-section" class="hidden bg-white rounded-lg shadow p-5 lg:col-span-2">
+      <h2 class="font-bold text-lg mb-3 text-slate-700">🔳 생성된 QR 코드</h2>
+      <div class="flex flex-col lg:flex-row gap-6 items-start">
+        <img id="qr-image" class="border-4 border-slate-200 rounded" />
+        <div class="flex-1">
+          <p class="text-sm text-slate-600 mb-2">저장 경로: <span id="qr-path" class="mono text-xs"></span></p>
+          <a id="qr-download" download="emergency_qr.png" class="inline-block bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-5 py-2 rounded shadow">
+            ⬇ PNG 다운로드
+          </a>
+          <p class="mt-4 text-xs text-slate-500">
+            ※ 라벨 프린터로 출력 시 2cm × 2cm 이상 크기 권장.
+            ※ 스마트폰 기본 카메라로 스캔하면 텍스트가 표시됩니다.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 외부 검색 모달 -->
+  <div id="external-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-6">
+    <div class="bg-white rounded-lg shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+      <div class="flex justify-between items-center p-5 border-b">
+        <h3 class="font-bold text-lg text-slate-700">🌐 식약처 e약은요 검색</h3>
+        <button onclick="closeExternalModal()" class="text-slate-400 hover:text-slate-700 text-2xl">✕</button>
+      </div>
+      <div class="p-5 border-b">
+        <div class="flex gap-2">
+          <input id="external-query" type="text" placeholder="약물명 입력 (예: 아스피린)"
+                 class="flex-1 border rounded px-3 py-2 focus:outline-none focus:border-indigo-500" />
+          <button onclick="searchExternal()"
+                  class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded">검색</button>
+        </div>
+      </div>
+      <div id="external-results" class="overflow-y-auto p-5 space-y-3 flex-1">
+        <p class="text-slate-400 text-sm text-center py-8">약물명을 입력하고 검색 버튼을 누르세요.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

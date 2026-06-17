@@ -1,0 +1,11 @@
+{
+  "name": "{{NAME}}",
+  "short_name": "{{SHORT_NAME}}",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "{{BG}}",
+  "theme_color": "{{THEME}}",
+  "lang": "ko"
+}

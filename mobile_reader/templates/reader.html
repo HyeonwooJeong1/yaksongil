@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#1e293b" />
+  <!-- iOS Safari 앱 모드 (홈 화면에 추가 후 풀스크린) -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="응급의료QR" />
+  <!-- Android Chrome 앱 모드 -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="application-name" content="응급의료QR" />
+  <!-- 단일 파일 배포라 PWA manifest는 inline data URI 사용 -->
+  <link rel="manifest" href='data:application/manifest+json;charset=utf-8,{"name":"응급의료정보 QR 리더","short_name":"응급의료QR","start_url":"./","display":"standalone","background_color":"%23f8fafc","theme_color":"%231e293b"}' />
+  <title>응급의료정보 QR 리더</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>{{JSQR_JS}}</script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+                   "Malgun Gothic", "Helvetica Neue", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .scan-frame {
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+    }
+    .scan-line {
+      animation: scan 2s ease-in-out infinite;
+    }
+    @keyframes scan {
+      0%, 100% { top: 10%; }
+      50%      { top: 90%; }
+    }
+  </style>
+</head>
+<body class="bg-slate-50">
+
+  <!-- 임베드 데이터 (빌드 시 채워짐) -->
+  <script id="cautions-data" type="application/octet-stream">{{CAUTIONS_GZIP_B64}}</script>
+
+  <!-- ============================================================ -->
+  <!-- Screen 1: QR 스캔 (카메라)                                   -->
+  <!-- ============================================================ -->
+  <section id="screen-scan" class="hidden fixed inset-0 bg-black z-10">
+    <div class="absolute inset-0 flex items-center justify-center">
+      <video id="video" class="w-full h-full object-cover" playsinline></video>
+    </div>
+    <canvas id="canvas" class="hidden"></canvas>
+
+    <!-- 스캔 가이드 프레임 -->
+    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div class="relative w-72 h-72 max-w-[80vw] max-h-[80vw]">
+        <div class="scan-frame absolute inset-0 border-4 border-white rounded-2xl"></div>
+        <div class="scan-line absolute left-2 right-2 h-0.5 bg-red-500"></div>
+      </div>
+    </div>
+
+    <!-- 상단 안내 -->
+    <div class="absolute top-0 left-0 right-0 p-6 text-center">
+      <p class="text-white text-lg font-semibold drop-shadow">
+        📷 QR 코드를 프레임 안에 비춰주세요
+      </p>
+    </div>
+
+    <!-- 하단 컨트롤 -->
+    <div class="absolute bottom-0 left-0 right-0 p-6 flex flex-col gap-3">
+      <p id="scan-status" class="text-white text-sm text-center drop-shadow"></p>
+      <button id="btn-cancel-scan"
+              class="bg-white/90 text-slate-800 font-semibold py-3 rounded-xl shadow-lg">
+        취소
+      </button>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Screen 2: 환자 + 약물 카드 리스트                            -->
+  <!-- ============================================================ -->
+  <section id="screen-list" class="hidden min-h-screen">
+    <header class="bg-slate-800 text-white px-5 py-4 sticky top-0 z-20 shadow-md">
+      <div class="flex items-center justify-between">
+        <h1 class="text-lg font-bold">응급의료정보</h1>
+        <button id="btn-rescan"
+                class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-full">
+          📷 다시 스캔
+        </button>
+      </div>
+    </header>
+
+    <main class="p-4 max-w-2xl mx-auto space-y-4">
+      <!-- 환자 정보 카드 (있을 때만) -->
+      <div id="patient-card" class="hidden bg-white rounded-2xl shadow p-5">
+        <h2 class="text-sm text-slate-500 mb-2">환자 정보</h2>
+        <div id="patient-info" class="text-slate-800 text-lg leading-relaxed"></div>
+        <p id="dispense-info" class="text-xs text-slate-400 mt-3"></p>
+      </div>
+
+      <!-- 주의 음식·약 모아보기 요약 -->
+      <div id="caution-summary" class="space-y-3"></div>
+      <details id="caution-detail" class="hidden bg-white rounded-2xl shadow p-4">
+        <summary class="cursor-pointer font-semibold text-slate-600 text-sm">
+          🔎 어떤 약 때문인지 자세히 보기
+        </summary>
+        <div id="caution-detail-body" class="mt-3 space-y-3 text-sm"></div>
+      </details>
+
+      <!-- 응급 위험 약물 -->
+      <div>
+        <h2 class="font-bold text-lg text-red-700 mb-2 flex items-center gap-2">
+          ⚠️ 응급 시 주의 약물
+          <span id="warning-count" class="text-sm text-slate-400 font-normal"></span>
+        </h2>
+        <div id="warning-list" class="space-y-2"></div>
+      </div>
+
+      <!-- 일반 약물 -->
+      <div>
+        <h2 class="font-bold text-lg text-slate-700 mb-2 flex items-center gap-2">
+          💊 일반 약물
+          <span id="normal-count" class="text-sm text-slate-400 font-normal"></span>
+        </h2>
+        <div id="normal-list" class="space-y-2"></div>
+      </div>
+
+      <p class="text-center text-xs text-slate-400 py-6">
+        ⓘ 이 정보는 참고용입니다. 정확한 복용 지침은 의사/약사와 상담하세요.
+      </p>
+    </main>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Screen 3: 약물 상세                                          -->
+  <!-- ============================================================ -->
+  <section id="screen-detail" class="hidden min-h-screen">
+    <header class="bg-slate-800 text-white px-5 py-4 sticky top-0 z-20 shadow-md">
+      <div class="flex items-center gap-3">
+        <button id="btn-back" class="text-2xl">◀</button>
+        <h1 id="detail-title" class="text-lg font-bold flex-1 truncate"></h1>
+      </div>
+      <p id="detail-subtitle" class="text-xs text-slate-300 mt-1"></p>
+    </header>
+
+    <main class="p-4 max-w-2xl mx-auto space-y-4">
+      <!-- 함께 먹으면 안 되는 약 (DUR 병용금기) -->
+      <div id="contra-section" class="hidden bg-white rounded-2xl shadow p-5">
+        <h2 class="font-bold text-base text-amber-700 mb-3">
+          ⚠️ 함께 먹으면 안 되는 약
+        </h2>
+        <ul id="contra-list" class="space-y-3"></ul>
+      </div>
+
+      <!-- 조심해야 할 음식 -->
+      <div id="food-section" class="hidden bg-white rounded-2xl shadow p-5">
+        <h2 class="font-bold text-base text-orange-700 mb-3">
+          🍎 조심해야 할 음식
+        </h2>
+        <ul id="food-list" class="space-y-3"></ul>
+      </div>
+
+      <!-- 매핑 정보 없음 -->
+      <div id="no-info" class="hidden bg-white rounded-2xl shadow p-5 text-center text-slate-500 text-sm">
+        이 약물에 대한 추가 정보가 데이터베이스에 없습니다.<br>
+        자세한 정보는 의사/약사와 상담하세요.
+      </div>
+    </main>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Screen 0: 첫 화면 (자동으로 카메라 시작 안 됐을 때)          -->
+  <!-- ============================================================ -->
+  <section id="screen-start" class="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+    <div class="text-7xl mb-6">📱</div>
+    <h1 class="text-2xl font-bold text-slate-800 mb-3">
+      응급의료정보 QR 리더
+    </h1>
+    <p class="text-slate-600 mb-8 max-w-sm">
+      부착된 QR 코드를 스캔하여<br>
+      복용 중인 약물의 주의사항을 확인하세요.
+    </p>
+    <button id="btn-start-scan"
+            class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-2xl shadow-lg text-lg w-72">
+      📷 카메라로 실시간 스캔
+    </button>
+    <p class="text-xs text-slate-400 mt-1">(HTTPS 환경 필요)</p>
+
+    <div class="my-4 flex items-center w-72">
+      <div class="flex-1 border-t border-slate-300"></div>
+      <span class="px-3 text-xs text-slate-400">또는</span>
+      <div class="flex-1 border-t border-slate-300"></div>
+    </div>
+
+    <div class="flex gap-3 w-72">
+      <button id="btn-take-photo"
+              class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 px-3 rounded-2xl shadow-lg">
+        📸<br><span class="text-sm">사진 찍기</span>
+      </button>
+      <button id="btn-pick-gallery"
+              class="flex-1 bg-violet-600 hover:bg-violet-700 text-white font-bold py-4 px-3 rounded-2xl shadow-lg">
+        🖼<br><span class="text-sm">갤러리</span>
+      </button>
+    </div>
+    <p class="text-xs text-slate-400 mt-1">(권한 없이 작동, 어디서나 OK)</p>
+
+    <!-- file-camera: 카메라 앱 우선 / file-gallery: 갤러리 선택 우선 -->
+    <input id="file-camera"  type="file" accept="image/*" capture="environment" class="hidden" />
+    <input id="file-gallery" type="file" accept="image/*"                       class="hidden" />
+
+    <p id="start-error" class="hidden mt-4 text-red-600 text-sm max-w-sm"></p>
+
+    <button id="btn-guide" class="mt-8 text-sm text-blue-600 underline">
+      📖 사용 방법 보기
+    </button>
+
+    <details class="mt-6 text-xs text-slate-400 max-w-sm">
+      <summary class="cursor-pointer">데이터 정보 / 면책 조항</summary>
+      <p class="mt-3 text-left leading-relaxed">
+        본 앱은 식약처 e약은요, 심평원 DUR 병용금기 데이터를 기반으로 합니다.
+        모든 정보는 참고용이며, 의료 전문가의 진료를 대체하지 않습니다.
+        응급 상황 시 즉시 119에 연락하세요.
+      </p>
+    </details>
+  </section>
+
+  <!-- 사용 가이드 슬라이드 패널 -->
+  <div id="guide-overlay" class="hidden fixed inset-0 bg-black/40 z-[60]" onclick="closeGuide()"></div>
+  <aside id="guide-panel"
+         class="fixed top-0 right-0 h-full w-full max-w-sm bg-white shadow-2xl z-[70]
+                translate-x-full transition-transform duration-300 overflow-y-auto">
+    <div class="sticky top-0 bg-blue-600 text-white px-5 py-4 flex justify-between items-center">
+      <h2 class="font-bold text-lg">📖 사용 방법</h2>
+      <button onclick="closeGuide()" class="text-2xl leading-none">✕</button>
+    </div>
+    <div class="p-5 space-y-5 text-sm text-slate-700">
+
+      <div class="bg-blue-50 rounded-xl p-4">
+        <h3 class="font-bold text-blue-800 mb-1">이 앱은?</h3>
+        <p>약 봉투·약병에 붙은 <b>응급 QR 스티커</b>를 찍으면,
+           복용 중인 약과 <b>조심해야 할 음식·약</b>을 알려줍니다.</p>
+      </div>
+
+      <div>
+        <h3 class="font-bold text-slate-800 mb-2">📷 QR 찍는 법</h3>
+        <ol class="list-decimal ml-5 space-y-1.5">
+          <li><b>📸 사진 찍기</b>: 카메라로 QR을 찍습니다 (어디서나 작동).</li>
+          <li><b>🖼 갤러리</b>: 저장된 QR 사진을 고릅니다.</li>
+          <li><b>📷 실시간 스캔</b>: QR을 비추면 자동 인식 (인터넷 연결 시).</li>
+        </ol>
+      </div>
+
+      <div>
+        <h3 class="font-bold text-slate-800 mb-2">📋 결과 보는 법</h3>
+        <ul class="list-disc ml-5 space-y-1.5">
+          <li><span class="text-red-600 font-bold">🚨 빨간 경고</span>: 함께 먹으면 위험한 약 조합</li>
+          <li><span class="text-orange-600 font-bold">🍎 음식</span>: 복용 중 조심할 음식</li>
+          <li><span class="text-amber-600 font-bold">⚠️ 약</span>: 같이 먹으면 안 되는 약</li>
+          <li>약 이름을 누르면 <b>자세한 정보</b>가 나옵니다.</li>
+        </ul>
+      </div>
+
+      <div class="bg-red-50 rounded-xl p-4">
+        <h3 class="font-bold text-red-800 mb-1">🚨 응급 상황이라면</h3>
+        <p>먼저 <b>119</b>에 신고하세요. 이 앱 정보를 구급대원·의료진에게 보여주면
+           빠른 처치에 도움이 됩니다.</p>
+      </div>
+
+      <div class="bg-amber-50 rounded-xl p-4 text-xs">
+        <h3 class="font-bold text-amber-800 mb-1">💡 알아두기</h3>
+        <ul class="list-disc ml-4 space-y-1">
+          <li>인터넷 없이도 작동합니다.</li>
+          <li>찍은 정보는 저장·전송되지 않습니다.</li>
+          <li>모든 정보는 <b>참고용</b>이며 의사·약사 상담을 대체하지 않습니다.</li>
+        </ul>
+      </div>
+
+      <p class="text-center text-xs text-slate-400 pt-3 border-t">
+        응급의료정보 QR 리더 · 참고용 정보
+      </p>
+    </div>
+  </aside>
+
+  <script>
+  // ============================================================
+  // 상태
+  // ============================================================
+  const state = {
+    cautions:    null,  // 성분코드 → 주의정보
+    drugIndex:   null,  // 약물명 → [성분코드]
+    foodIndex:   null,  // 약물명 → [음식]
+    parsed:      null,  // QR 파싱 결과
+    stream:      null,  // MediaStream
+    scanning:    false,
+  };
+  const $ = (id) => document.getElementById(id);
+  const show = (id) => {
+    ["screen-start", "screen-scan", "screen-list", "screen-detail"]
+      .forEach(s => $(s).classList.toggle("hidden", s !== id));
+  };
+
+  // 사용 가이드 슬라이드 패널
+  function openGuide() {
+    $("guide-overlay").classList.remove("hidden");
+    $("guide-panel").classList.remove("translate-x-full");
+  }
+  function closeGuide() {
+    $("guide-overlay").classList.add("hidden");
+    $("guide-panel").classList.add("translate-x-full");
+  }
+
+
+  // ============================================================
+  // 한국 약물명 정규화 (Python normalize.py와 동일 로직)
+  // ============================================================
+  const KOREAN_PHARMA_PREFIXES = [
+    "한국글락소스미스클라인","한국아스트라제네카","한국노바티스",
+    "한국화이자제약","한국얀센제약","한국유나이티드","JW생명과학","JW중외",
+    "메디카코리아","씨제이헬스케어","엘지화학",
+    "동아에스티","대웅제약","보령제약","한미약품","유한양행","동성제약",
+    "신풍제약","일양약품","부광약품","환인제약","영진약품","삼진제약",
+    "GC녹십자","제일약품","녹십자","휴온스","셀트리온",
+    "한국휴텍스","한국오노약품","한국노보","한국애보트","한국얀센",
+    "한국화이자","한국로슈","한국MSD","한국BMS","한국릴리","한국알콘",
+    "한국오츠카","한국애브비","한국사노피","한국유니메드","한국유니온",
+    "넥스팜코리아","비씨월드제약","엘에스이엔지","메지온",
+    "광동제약","대한약품","JW","CJ","GSK","LG화학",
+    "종근당","유한","일동","대웅","보령","한미","삼성바이오","동성",
+    "신풍","일양","부광","환인","영진","삼진","휴비스","동광",
+    "에이프로젠","넥스팜","테라켐","오스코리아","다림바이오텍","더유제약",
+    "케이엠에스","대원제약","삼아제약","건일제약","이연제약","삼익제약",
+    "명문제약","초당약품","현대약품","근화제약","신신제약","유유제약",
+    "한솔제약","동국제약","마더스제약","지엘파마","비씨월드","사노피",
+    "한림제약","유나이티드","신일제약","안국약품","동화약품","구주제약",
+    "씨엠지","코오롱","메디카","위더스","코웰","휴텍스","구주",
+    "한국콜마","한국파마","한국팜비오","유니메드","유니온","메디톡스",
+    "마더스","고려제약","씨트리","고려","한솔","동국",
+    "유유","동구바이오","동구","경동","경보","광동","동아","제일",
+    "한림","대원","삼아","건일","이연","삼익","명문","초당","현대",
+    "근화","신신","대한","신일","안국","동화","한독","한미","대웅",
+  ].sort((a, b) => b.length - a.length);
+
+  const DRUG_FORM_SUFFIXES = [
+    "장용필름코팅정","필름코팅정","구강분해정","구강용해정","서방형캡슐",
+    "장용형캡슐","장용캡슐","서방캡슐","연질캡슐","경질캡슐",
+    "장용정","서방정","분산정","당의정","츄어블정",
+    "프리필드시린지","프리필드","프리믹스","구강스프레이",
+    "현탁액","엘릭서","주사액","액제","산제","과립제",
+    "정","캡슐","주사","시럽","액","산","과립","주",
+    "크림","연고","로션","패치","겔","에어로졸","흡입제","흡입액","스프레이",
+  ].sort((a, b) => b.length - a.length);
+
+  function normalizeName(name) {
+    if (!name) return "";
+    name = name.trim();
+    const original = name;
+    for (const p of KOREAN_PHARMA_PREFIXES) {
+      if (name.startsWith(p) && name.length > p.length + 1) {
+        name = name.slice(p.length);
+        break;
+      }
+    }
+    for (const s of DRUG_FORM_SUFFIXES) {
+      if (name.endsWith(s) && name.length > s.length + 1) {
+        name = name.slice(0, -s.length);
+        break;
+      }
+    }
+    name = name.trim();
+    return name.length < 2 ? original : name;
+  }
+
+
+  // ============================================================
+  // 데이터 압축 해제 + 정규화 인덱스
+  // ============================================================
+  async function decompressJSON(elemId) {
+    const b64 = $(elemId).textContent.trim();
+    if (!b64) return {};
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const stream = new Response(bytes).body
+      .pipeThrough(new DecompressionStream("gzip"));
+    const text = await new Response(stream).text();
+    return JSON.parse(text);
+  }
+
+
+  function buildIndex(dataMap) {
+    // 키 정규화 → 빠른 lookup용 인덱스
+    const index = {};
+    for (const key in dataMap) {
+      const norm = normalizeName(key);
+      if (!index[norm]) index[norm] = dataMap[key];
+    }
+    // 원본 키도 유지 (exact match 우선)
+    return { exact: dataMap, normalized: index };
+  }
+
+
+  function lookup(name, idx) {
+    if (!name || !idx) return null;
+    // QR 약물명 = drug_index 키(short_name)라 정확/정규화 매칭이면 충분.
+    // 부분매칭은 '비','조코' 같은 절단 키의 오탐을 유발해 제거함.
+    if (idx.exact[name]) return idx.exact[name];
+    const norm = normalizeName(name);
+    if (idx.normalized[norm]) return idx.normalized[norm];
+    return null;
+  }
+
+
+  // 약물명 → 통합 주의정보 (병용금기/노인주의/효능군중복 합산)
+  function getCautionInfo(drugName) {
+    const codes = lookup(drugName, state.drugIndex) || [];
+    const result = { contra: [], elderly: [], duplicate: [] };
+    const seen = new Set();
+    for (const code of codes) {
+      const info = (state.cautions || {})[code];
+      if (!info) continue;
+      for (const c of (info.contra || [])) {
+        if (!seen.has(c.name)) { seen.add(c.name); result.contra.push(c); }
+      }
+      if (info.elderly && !result.elderly.includes(info.elderly)) result.elderly.push(info.elderly);
+      if (info.duplicate && !result.duplicate.includes(info.duplicate)) result.duplicate.push(info.duplicate);
+    }
+    return result;
+  }
+
+  function getFoodInfo(drugName) {
+    return lookup(drugName, state.foodIndex) || [];
+  }
+
+
+  // ============================================================
+  // QR 텍스트 파싱
+  // ============================================================
+  function parseQRText(text) {
+    // 형식 예:
+    //   [응급의료(다제약물)]
+    //   환자: 김OO 남 1958-03-15(67) 170/65
+    //   조제: 2026-06-01
+    //   주의: 아스피린(출혈), 아마릴(저혈당)
+    //   일반: 리피토(고지혈), 노바스크(고혈압)
+    const result = {
+      header:   "",
+      patient:  "",
+      dispense: "",
+      warning:  [],  // [{name, risk}]
+      normal:   [],  // [{name, indication}]
+      raw:      text,
+    };
+
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const l = line.trim();
+      if (!l) continue;
+      if (l.startsWith("*#*")) continue;   // 복원용 데이터 블록(생성기 전용) — 표시 안 함
+      if (l.startsWith("[")) {
+        result.header = l;
+      } else if (l.startsWith("주의")) {
+        result.warning = parseDrugList(l.replace(/^주의\s*:?\s*/, ""));
+      } else if (l.startsWith("일반")) {
+        result.normal = parseDrugList(l.replace(/^일반\s*:?\s*/, ""));
+      } else if (l.startsWith("환자")) {
+        result.patient = l.replace(/^환자\s*:?\s*/, "");
+      } else if (l.startsWith("조제")) {
+        result.dispense = l.replace(/^조제\s*:?\s*/, "");
+      } else if (!result.patient) {
+        // 알려진 라벨이 아닌 line은 환자 정보로 추정 (라벨 제거된 새 포맷 호환)
+        result.patient = l;
+      }
+    }
+    return result;
+  }
+
+
+  function parseDrugList(s) {
+    // "아스피린(출혈)[26.08.01], 아마릴(저혈당)" → [{name, tag, endDate}]
+    // 종료일 [YY.MM.DD] 과 위험키워드 (출혈) 을 모두 분리. 둘 다 선택적.
+    if (!s || s === "없음") return [];
+    // 콤마 분리 (괄호/대괄호 안 콤마는 보호)
+    const parts = [];
+    let depth = 0, cur = "";
+    for (const ch of s) {
+      if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      if (ch === "," && depth === 0) { parts.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    if (cur.trim()) parts.push(cur);
+
+    return parts.map(part => {
+      const m = part.trim().match(/^(.+?)\s*(?:\(([^)]*)\))?\s*(?:\[([^\]]*)\])?\s*$/);
+      if (m) return { name: m[1].trim(), tag: (m[2] || "").trim(), endDate: (m[3] || "").trim() };
+      return { name: part.trim(), tag: "", endDate: "" };
+    }).filter(d => d.name);
+  }
+
+
+  // ============================================================
+  // 카메라 + QR 스캔
+  // ============================================================
+  async function startCamera() {
+    // Secure context (HTTPS/localhost) 체크 — 보안 정책상 file://은 불가
+    if (!window.isSecureContext) {
+      $("start-error").textContent =
+        "⚠ 실시간 카메라 스캔은 HTTPS 환경에서만 동작합니다. " +
+        "대신 아래 '🖼 사진 찍기 / 이미지 선택' 버튼을 사용하세요.";
+      $("start-error").classList.remove("hidden");
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $("start-error").textContent =
+        "⚠ 이 브라우저는 카메라 접근을 지원하지 않습니다. " +
+        "'🖼 사진 찍기' 버튼을 사용하세요.";
+      $("start-error").classList.remove("hidden");
+      return;
+    }
+
+    show("screen-scan");
+    $("scan-status").textContent = "카메라 접근 중...";
+
+    try {
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },  // 후면 카메라
+        audio: false,
+      });
+      const video = $("video");
+      video.srcObject = state.stream;
+      video.setAttribute("playsinline", true);
+      await video.play();
+      state.scanning = true;
+      $("scan-status").textContent = "스캔 중...";
+      requestAnimationFrame(scanLoop);
+    } catch (e) {
+      const msg = (e.name === "NotAllowedError")
+        ? "카메라 권한이 거부되었습니다. 브라우저 설정에서 허용 후 다시 시도하세요."
+        : "카메라 접근 실패: " + (e.message || e.name);
+      $("start-error").textContent = "❌ " + msg + " (또는 '🖼 사진 찍기' 사용)";
+      $("start-error").classList.remove("hidden");
+      show("screen-start");
+    }
+  }
+
+
+  // ============================================================
+  // 이미지 파일에서 QR 추출 (fallback: HTTPS 없이도 작동)
+  // ============================================================
+  function decodeFromImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 1500;  // 너무 큰 이미지는 다운스케일
+        let width  = img.naturalWidth  || img.width;
+        let height = img.naturalHeight || img.height;
+        if (Math.max(width, height) > maxDim) {
+          const scale = maxDim / Math.max(width, height);
+          width  = Math.round(width  * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width  = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height, {
+          inversionAttempts: "attemptBoth",  // 반전 이미지도 시도
+        });
+        URL.revokeObjectURL(img.src);
+        if (code && code.data) resolve(code.data);
+        else reject(new Error("이미지에서 QR 코드를 찾을 수 없습니다."));
+      };
+      img.onerror = () => reject(new Error("이미지를 불러올 수 없습니다."));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+
+  async function handleImagePick(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";  // 같은 파일 다시 선택 가능하게 reset
+    if (!file) return;
+
+    $("start-error").classList.add("hidden");
+    try {
+      const text = await decodeFromImageFile(file);
+      onQRDetected(text);
+    } catch (err) {
+      $("start-error").textContent =
+        "❌ " + err.message + " — 더 가까이/밝게 찍은 사진을 시도해 보세요.";
+      $("start-error").classList.remove("hidden");
+    }
+  }
+
+
+  function stopCamera() {
+    state.scanning = false;
+    if (state.stream) {
+      state.stream.getTracks().forEach(t => t.stop());
+      state.stream = null;
+    }
+    $("video").srcObject = null;
+  }
+
+
+  function scanLoop() {
+    if (!state.scanning) return;
+    const video  = $("video");
+    const canvas = $("canvas");
+
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+      requestAnimationFrame(scanLoop);
+      return;
+    }
+
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+    const code = jsQR(imgData.data, imgData.width, imgData.height, {
+      inversionAttempts: "dontInvert",
+    });
+
+    if (code && code.data) {
+      onQRDetected(code.data);
+      return;
+    }
+    requestAnimationFrame(scanLoop);
+  }
+
+
+  function onQRDetected(text) {
+    state.scanning = false;
+    stopCamera();
+    state.parsed = parseQRText(text);
+    renderList();
+    show("screen-list");
+  }
+
+
+  // ============================================================
+  // 메인 리스트 렌더링
+  // ============================================================
+  function renderList() {
+    const p = state.parsed;
+    if (!p) return;
+
+    // 환자 정보
+    if (p.patient) {
+      $("patient-card").classList.remove("hidden");
+      $("patient-info").textContent = p.patient;
+      $("dispense-info").textContent = p.dispense ? `조제: ${p.dispense}` : "";
+    } else {
+      $("patient-card").classList.add("hidden");
+    }
+
+    // 위험 약물
+    $("warning-count").textContent = p.warning.length ? `(${p.warning.length}건)` : "";
+    $("warning-list").innerHTML = p.warning.length
+      ? p.warning.map(d => drugCard(d, "warning")).join("")
+      : `<div class="bg-white rounded-2xl p-4 text-center text-slate-400 text-sm">없음</div>`;
+
+    // 일반 약물
+    $("normal-count").textContent = p.normal.length ? `(${p.normal.length}건)` : "";
+    $("normal-list").innerHTML = p.normal.length
+      ? p.normal.map(d => drugCard(d, "normal")).join("")
+      : `<div class="bg-white rounded-2xl p-4 text-center text-slate-400 text-sm">없음</div>`;
+
+    // 주의 음식·약 모아보기 요약
+    renderCautionSummary([...p.warning, ...p.normal]);
+  }
+
+
+  // ============================================================
+  // 주의 음식·약 요약 (생성기와 동일한 출력 포맷)
+  // ============================================================
+  function renderCautionSummary(drugItems) {
+    const names = drugItems.map(d => d.name);
+    const myNames = new Set(names);
+
+    const foods = new Map();
+    const contraDrugs = new Map();
+    const elderly = new Map();      // 약 → 노인주의 사유
+    const duplicate = new Map();    // 효능군 → Set(약)
+    const internalPairs = [];
+
+    names.forEach(name => {
+      for (const f of getFoodInfo(name)) {
+        if (!foods.has(f.label)) foods.set(f.label, { emoji: f.emoji || "", reason: f.reason || "", source: f.source || "", drugs: new Set() });
+        foods.get(f.label).drugs.add(name);
+      }
+      const info = getCautionInfo(name);
+      info.contra.forEach(c => {
+        if (!contraDrugs.has(c.name)) contraDrugs.set(c.name, { reason: c.reason || "", causedBy: new Set() });
+        contraDrugs.get(c.name).causedBy.add(name);
+        if (myNames.has(c.name)) {
+          const pair = [name, c.name].sort().join(" + ");
+          if (!internalPairs.some(p => p.pair === pair)) internalPairs.push({ pair, reason: c.reason || "" });
+        }
+      });
+      info.elderly.forEach(e => elderly.set(name, e));
+      info.duplicate.forEach(dup => {
+        if (!duplicate.has(dup)) duplicate.set(dup, new Set());
+        duplicate.get(dup).add(name);
+      });
+    });
+
+    let html = "";
+    // 0) 내 약끼리 병용금기
+    if (internalPairs.length) {
+      html += `
+        <div class="bg-red-50 border-2 border-red-300 rounded-2xl p-4">
+          <h3 class="font-bold text-red-700 mb-2">🚨 복용 약물 간 병용금기</h3>
+          <ul class="space-y-1 text-sm">
+            ${internalPairs.map(p => `<li class="text-red-800">⛔ <b>${p.pair}</b>${p.reason ? ` — ${p.reason}` : ""}</li>`).join("")}
+          </ul>
+          <p class="text-xs text-red-500 mt-2">함께 복용 시 위험. 즉시 의료진에 알리세요.</p>
+        </div>`;
+    }
+    // 1) 효능군 중복
+    const dupActive = [...duplicate.entries()].filter(([_, s]) => s.size >= 2);
+    if (dupActive.length) {
+      html += `
+        <div class="bg-purple-50 border border-purple-200 rounded-2xl p-4">
+          <h3 class="font-bold text-purple-700 mb-2">🔁 같은 계열 약 중복</h3>
+          <ul class="space-y-1 text-sm">
+            ${dupActive.map(([name, s]) => `<li><b>${name}</b>: ${[...s].join(", ")}</li>`).join("")}
+          </ul>
+        </div>`;
+    }
+    // 2) 노인주의
+    if (elderly.size) {
+      html += `
+        <div class="bg-rose-50 border border-rose-200 rounded-2xl p-4">
+          <h3 class="font-bold text-rose-700 mb-2">👵 노인 주의 약물 <span class="text-xs font-normal text-slate-400">(${elderly.size})</span></h3>
+          <ul class="space-y-1 text-sm">
+            ${[...elderly.entries()].map(([name, why]) => `<li><b>${name}</b> <span class="text-xs text-slate-500">— ${(why||"").slice(0,40)}</span></li>`).join("")}
+          </ul>
+        </div>`;
+    }
+    // 3) 음식
+    if (foods.size) {
+      const items = [...foods.entries()].map(([label, v]) =>
+        `<li class="flex items-start gap-2">
+           <span class="text-lg shrink-0">${v.emoji}</span>
+           <div><b>${label}</b> <span class="text-slate-500 text-xs">— ${v.reason}</span></div>
+         </li>`).join("");
+      html += `
+        <div class="bg-orange-50 border border-orange-200 rounded-2xl p-4">
+          <h3 class="font-bold text-orange-700 mb-2">🍎 조심해야 할 음식 <span class="text-xs font-normal text-slate-400">(${foods.size})</span></h3>
+          <ul class="space-y-2 text-sm">${items}</ul>
+        </div>`;
+    }
+    // 4) 함께 먹으면 안 되는 약
+    if (contraDrugs.size) {
+      const ns = [...contraDrugs.keys()];
+      const shown = ns.slice(0, 40);
+      html += `
+        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+          <h3 class="font-bold text-amber-700 mb-2">⚠️ 함께 먹으면 안 되는 약 <span class="text-xs font-normal text-slate-400">(${ns.length})</span></h3>
+          <div class="flex flex-wrap gap-1.5">
+            ${shown.map(n => `<span class="text-xs bg-white border border-amber-300 text-amber-800 px-2 py-0.5 rounded-full">${n}</span>`).join("")}
+            ${ns.length > shown.length ? `<span class="text-xs text-slate-400">외 ${ns.length - shown.length}건</span>` : ""}
+          </div>
+        </div>`;
+    }
+    $("caution-summary").innerHTML = html;
+
+    // 상세
+    if (!foods.size && !contraDrugs.size) {
+      $("caution-detail").classList.add("hidden");
+      return;
+    }
+    let detail = "";
+    if (foods.size) {
+      detail += `<div><h4 class="font-semibold text-orange-700 mb-1">🍎 음식별 원인 약물</h4><ul class="space-y-1">`;
+      for (const [label, v] of foods.entries())
+        detail += `<li>${v.emoji} <b>${label}</b> ← ${[...v.drugs].join(", ")}${v.source ? ` <span class="text-[10px] text-slate-400">[${v.source}]</span>` : ""}</li>`;
+      detail += `</ul></div>`;
+    }
+    if (contraDrugs.size) {
+      detail += `<div class="mt-3"><h4 class="font-semibold text-amber-700 mb-1">⚠️ 금기약별 원인 약물</h4><ul class="space-y-1">`;
+      for (const [name, v] of contraDrugs.entries())
+        detail += `<li>⛔ <b>${name}</b> ← ${[...v.causedBy].join(", ")}${v.reason ? `<br><span class="text-xs text-slate-500 ml-4">${v.reason}</span>` : ""}</li>`;
+      detail += `</ul></div>`;
+    }
+    $("caution-detail-body").innerHTML = detail;
+    $("caution-detail").classList.remove("hidden");
+  }
+
+
+  function drugCard(drug, category) {
+    const isWarning = category === "warning";
+    const bgClass   = isWarning ? "border-l-4 border-red-500" : "border-l-4 border-slate-300";
+    const tagClass  = isWarning ? "text-red-700 bg-red-100" : "text-slate-600 bg-slate-100";
+    const tagPrefix = isWarning ? "⚠ " : "";
+    const safeName  = encodeURIComponent(drug.name);
+    const safeTag   = encodeURIComponent(drug.tag);
+    return `
+      <button onclick="openDetail('${safeName}', '${safeTag}', '${category}')"
+              class="w-full text-left bg-white rounded-2xl shadow p-4 ${bgClass}
+                     hover:bg-slate-50 active:bg-slate-100 transition">
+        <div class="flex items-center justify-between">
+          <div class="flex-1 min-w-0">
+            <div class="font-bold text-slate-800 text-base">${drug.name}</div>
+            ${drug.tag ? `<span class="inline-block text-xs px-2 py-0.5 rounded mt-1 ${tagClass}">${tagPrefix}${drug.tag}</span>` : ""}
+          </div>
+          <span class="text-slate-400 ml-2">▶</span>
+        </div>
+      </button>
+    `;
+  }
+
+
+  // ============================================================
+  // 약물 상세 화면 (병용금기 + 음식)
+  // ============================================================
+  function openDetail(safeName, safeTag, category) {
+    const name = decodeURIComponent(safeName);
+    const tag  = decodeURIComponent(safeTag);
+
+    $("detail-title").textContent = name;
+    $("detail-subtitle").textContent = tag
+      ? (category === "warning" ? `⚠ ${tag} 위험` : tag)
+      : "";
+
+    // 병용금기 (DUR 성분정보)
+    const info = getCautionInfo(name);
+    if (info.contra.length) {
+      $("contra-section").classList.remove("hidden");
+      $("contra-list").innerHTML = info.contra.slice(0, 30).map(c => `
+          <li class="border-b border-slate-100 pb-3 last:border-0 last:pb-0">
+            <div class="font-semibold text-slate-800 mb-1">⛔ ${c.name}</div>
+            ${c.reason ? `<p class="text-xs text-slate-600 leading-relaxed">${c.reason}</p>` : ""}
+          </li>`).join("");
+    } else {
+      $("contra-section").classList.add("hidden");
+    }
+
+    // 음식 상호작용
+    const foods = getFoodInfo(name);
+    if (foods.length) {
+      $("food-section").classList.remove("hidden");
+      $("food-list").innerHTML = foods.map(f => `
+        <li class="border-b border-slate-100 pb-3 last:border-0 last:pb-0">
+          <div class="font-semibold text-slate-800 mb-1">${f.emoji || ""} ${f.label}</div>
+          <p class="text-xs text-slate-600 leading-relaxed">${f.reason}${f.source ? ` <span class="text-[10px] text-slate-400">[${f.source}]</span>` : ""}</p>
+        </li>`).join("");
+    } else {
+      $("food-section").classList.add("hidden");
+    }
+
+    // 둘 다 없으면
+    const hasInfo = ($("contra-section").classList.contains("hidden") === false) ||
+                    ($("food-section").classList.contains("hidden") === false);
+    $("no-info").classList.toggle("hidden", hasInfo);
+
+    show("screen-detail");
+    window.scrollTo(0, 0);
+  }
+
+
+  // ============================================================
+  // 이벤트 바인딩
+  // ============================================================
+  document.addEventListener("DOMContentLoaded", async () => {
+    show("screen-start");
+
+    // 통합 주의정보 로드 (백그라운드)
+    try {
+      const data = await decompressJSON("cautions-data");
+      state.cautions  = data.cautions || {};
+      state.drugIndex = buildIndex(data.drug_index || {});
+      state.foodIndex = buildIndex(data.food_index || {});
+      console.log(
+        `[OK] 주의정보: 성분 ${Object.keys(state.cautions).length}, ` +
+        `약물 ${Object.keys(data.drug_index||{}).length}, 음식 ${Object.keys(data.food_index||{}).length}`
+      );
+    } catch (e) {
+      console.error("데이터 로드 실패:", e);
+      $("start-error").textContent = "데이터 로드 실패: " + e.message;
+      $("start-error").classList.remove("hidden");
+    }
+
+    $("btn-guide").addEventListener("click", openGuide);
+    $("btn-start-scan").addEventListener("click", startCamera);
+    $("btn-take-photo").addEventListener("click", () => $("file-camera").click());
+    $("btn-pick-gallery").addEventListener("click", () => $("file-gallery").click());
+    $("file-camera").addEventListener("change", handleImagePick);
+    $("file-gallery").addEventListener("change", handleImagePick);
+    $("btn-cancel-scan").addEventListener("click", () => {
+      stopCamera();
+      show("screen-start");
+    });
+    $("btn-rescan").addEventListener("click", () => {
+      // 재스캔: secure context면 실시간 카메라, 아니면 카메라 앱 호출
+      if (window.isSecureContext) startCamera();
+      else $("file-camera").click();
+    });
+    $("btn-back").addEventListener("click", () => show("screen-list"));
+  });
+  </script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "PowerShell(python --version)",
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "WebFetch(domain:zenodo.org)",
+      "WebFetch(domain:data.mfds.go.kr)",
+      "WebFetch(domain:nedrug.mfds.go.kr)",
+      "WebFetch(domain:www.data.go.kr)",
+      "WebFetch(domain:apis.data.go.kr)",
+      "Bash(grep -iE \"\\\\.csv$\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c \"import json; dc=json.load\\(open\\('mobile_reader/data/drug_cautions.json',encoding='utf-8'\\)\\); di=dc['drug_index']; short=[k for k in di if len\\(k\\)<=2]; print\\('2글자 이하 키:', short\\)\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c \"import json; dc=json.load\\(open\\('mobile_reader/data/drug_cautions.json',encoding='utf-8'\\)\\); di=dc['drug_index']; f=lambda n:[k for k in di if \\(n in k or k in n\\)][:6]; [print\\(t,'->',f\\(t\\)\\) for t in ['아스피린','비타민C','조코바','메카정']]\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 _tmp_check.py)",
+      "WebFetch(domain:www.health.kr)",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c \"from mobile_reader.food_rules import FOOD_RULES; from collections import Counter; c=Counter\\(r[5] for r in FOOD_RULES\\); print\\('총 규칙:', len\\(FOOD_RULES\\)\\); print\\('등급별:', dict\\(c\\)\\); labels=set\\(r[1] for r in FOOD_RULES\\); print\\('음식 라벨 종류:', len\\(labels\\)\\); print\\(sorted\\(labels\\)\\)\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c \"from mobile_reader.food_rules import FOOD_RULES; from collections import Counter; c=Counter\\(r[5] for r in FOOD_RULES\\); print\\('총 규칙:', len\\(FOOD_RULES\\), '| 등급:', dict\\(c\\)\\); labels=sorted\\(set\\(r[1] for r in FOOD_RULES\\)\\); print\\('라벨', len\\(labels\\), '종:'\\); print\\(labels\\)\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c \"import sqlite3; c=sqlite3.connect\\('drug_master.db'\\); r=c.execute\\(\\\\\"SELECT kd_code,short_name,ingredient_code FROM drug_master WHERE kd_code LIKE 'KD%'\\\\\"\\).fetchall\\(\\); print\\(f'Mock\\(KD\\) 약물: {len\\(r\\)}개'\\); [print\\(' ', x[0],x[1],x[2]\\) for x in r]\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c \"import sqlite3; c=sqlite3.connect\\('drug_master.db'\\); n=c.execute\\(\\\\\"DELETE FROM drug_master WHERE kd_code LIKE 'KD%'\\\\\"\\).rowcount; c.commit\\(\\); print\\(f'Mock {n}개 삭제됨'\\); tot=c.execute\\('SELECT COUNT\\(*\\) FROM drug_master'\\).fetchone\\(\\)[0]; print\\(f'남은 약물: {tot:,}개'\\)\")",
+      "Bash(C:/ProgramData/anaconda3/python.exe -m mobile_reader.build_drug_cautions)",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 _tmp_gen.py)",
+      "Bash(C:/ProgramData/anaconda3/python.exe -X utf8 -c ' *)",
+      "PowerShell($os = Get-CimInstance Win32_OperatingSystem; Write-Output \"에디션: $\\($os.Caption\\)\"; Write-Output \"버전: $\\($os.Version\\)\"; Write-Output \"빌드: $\\($os.BuildNumber\\)\"; Write-Output \"아키텍처: $\\($os.OSArchitecture\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(node -e ' *)",
+      "Bash(python build_static.py)",
+      "Bash(python -m pip install requests --quiet)",
+      "Bash(PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python build_static.py)",
+      "Bash(PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python -m mobile_reader.build_reader)",
+      "Bash(python -m pip install \"qrcode[pil]\" --quiet)",
+      "Bash(PYTHONUTF8=1 python -c ' *)",
+      "PowerShell(Write-Output \"=== PowerShell의 python ===\"; try { \\(Get-Command python -ErrorAction Stop\\).Source } catch { \"python 없음\" }; python -c \"import sys; print\\('exe:', sys.executable\\)\" 2>&1; Write-Output \"=== conda 존재 여부 ===\"; try { conda info --envs 2>&1 } catch { \"conda 없음\" }; Write-Output \"=== CONDA 환경변수 ===\"; $env:CONDA_DEFAULT_ENV; $env:CONDA_PREFIX)",
+      "Bash(python -c \"import sys; print\\('exe:', sys.executable\\); print\\('ver:', sys.version\\)\")",
+      "PowerShell(& \"C:\\\\ProgramData\\\\anaconda3\\\\python.exe\" -c \"import requests, sys; print\\('conda requests OK:', requests.__version__, '| py', sys.version.split\\(\\)[0]\\)\" 2>&1)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\정현우\\\\Desktop\\\\정현우 개인\\\\LG ESG ACADEMY\\\\다제약물\"; $env:PYTHONUTF8=\"1\"; & \"C:\\\\ProgramData\\\\anaconda3\\\\python.exe\" -m app.services.external.hira_benefit_loader)",
+      "Bash(git rm *)",
+      "Bash(git add *)"
+    ]
+  }
+}

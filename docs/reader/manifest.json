@@ -1,0 +1,11 @@
+{
+  "name": "응급의료정보 QR 리더",
+  "short_name": "응급QR리더",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f8fafc",
+  "theme_color": "#1e293b",
+  "lang": "ko"
+}

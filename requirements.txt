@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+qrcode[pil]
+pillow
+python-dotenv
+requests
+pydantic

@@ -1,0 +1,11 @@
+{
+  "name": "다제약물 응급 QR 생성기",
+  "short_name": "QR생성기",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f8fafc",
+  "theme_color": "#1e293b",
+  "lang": "ko"
+}

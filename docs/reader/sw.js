@@ -1,7 +1,7 @@
 /* 서비스워커 — 오프라인 캐시 + 백그라운드 자동 갱신
- * 빌드 시 20260617-224556 / druginfo-reader 치환. 버전이 바뀌면 옛 캐시 무효화 → 다음 실행 때 새 버전 적용.
+ * 빌드 시 20260617-225147 / druginfo-reader 치환. 버전이 바뀌면 옛 캐시 무효화 → 다음 실행 때 새 버전 적용.
  */
-const VERSION = "20260617-224556";
+const VERSION = "20260617-225147";
 const APP = "druginfo-reader";
 const CACHE = `${APP}-${VERSION}`;
 

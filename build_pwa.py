@@ -44,45 +44,23 @@ REG_SNIPPET = """
 #   - iOS Safari: 프롬프트 미지원 → 버튼 탭 시 "홈 화면에 추가" 안내
 BODY_SNIPPET = """
   <style>
-  #pwa-fab{position:fixed;left:16px;bottom:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
-  #pwa-fab button{background:{{ACCENT}};color:#fff;font-weight:700;padding:10px 16px;border-radius:9999px;
-    box-shadow:0 4px 14px rgba(0,0,0,.28);border:none;cursor:pointer;font-size:14px;font-family:inherit}
+  #pwa-install-btn{position:fixed;left:16px;bottom:16px;z-index:9999;background:{{ACCENT}};color:#fff;
+    font-weight:700;padding:10px 16px;border-radius:9999px;box-shadow:0 4px 14px rgba(0,0,0,.28);
+    border:none;cursor:pointer;font-size:14px;font-family:inherit}
   </style>
-  <div id="pwa-fab">
-    <button id="pwa-install-btn" style="display:none">📲 앱 설치</button>
-    <button id="pwa-shortcut-btn" style="display:none">🔗 바로가기 다운로드</button>
-  </div>
+  <button id="pwa-install-btn" style="display:none">📲 앱 설치</button>
   <script>
   (function(){
-    var fab=document.getElementById('pwa-fab');
-    var installBtn=document.getElementById('pwa-install-btn');
-    var shortcutBtn=document.getElementById('pwa-shortcut-btn');
-    var isMobile=/android|iphone|ipad|ipod/i.test(navigator.userAgent);
-    if(window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone){
-      fab.style.display='none'; return;   // 이미 설치된 앱으로 실행 중이면 숨김
-    }
-    // ① 설치 버튼: 항상 표시(사라지지 않음). 설치 가능하면 즉시 설치, 아니면 방법 안내.
-    var dp=null;
+    var btn=document.getElementById('pwa-install-btn'); var dp=null;
+    if(window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone) return;
     window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();dp=e;});
-    installBtn.style.display='block';
-    installBtn.addEventListener('click',function(){
+    btn.style.display='block';   // 항상 표시
+    btn.addEventListener('click',function(){
       if(dp){dp.prompt();dp.userChoice.then(function(){dp=null;});return;}
-      alert('홈 화면에 추가:\\n\\niPhone(Safari): 하단 [공유] → 홈 화면에 추가\\nAndroid(Chrome): 메뉴(⋮) → 앱 설치\\nPC(Chrome/Edge): 주소창 오른쪽 설치 아이콘');
+      // 설치 신호가 없음 = 보통 "이미 설치됨". 바탕화면 아이콘만 지운 경우 앱은 그대로 남아있음.
+      alert('아이콘 만들기 / 설치 방법\\n\\n[PC Chrome/Edge] 주소창 오른쪽 설치(+) 아이콘 클릭\\n\\n[바탕화면 아이콘만 지웠을 때]\\n앱은 그대로 설치돼 있습니다. 시작 메뉴에서 실행하거나,\\nchrome://apps 에서 우클릭 → 바로가기 만들기.\\n\\n[완전히 다시 설치하려면]\\nchrome://apps 에서 먼저 제거 → 이 버튼 다시 클릭.\\n\\n[iPhone] 하단 [공유] → 홈 화면에 추가\\n[Android] 메뉴(⋮) → 앱 설치');
     });
-    window.addEventListener('appinstalled',function(){fab.style.display='none';});
-    // ② 바로가기 다운로드(.url): 데스크톱용. 받은 파일을 바탕화면에 두면 더블클릭으로 앱이 열림.
-    if(!isMobile){
-      shortcutBtn.style.display='block';
-      shortcutBtn.addEventListener('click',function(){
-        var title=(document.title||'응급QR').replace(/[^\\w가-힣 ]/g,'').trim()||'응급QR';
-        var body='[InternetShortcut]\\r\\nURL='+location.href+'\\r\\nIconIndex=0\\r\\n';
-        var a=document.createElement('a');
-        a.href=URL.createObjectURL(new Blob([body],{type:'application/octet-stream'}));
-        a.download=title+'.url';
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-      });
-    }
+    window.addEventListener('appinstalled',function(){btn.style.display='none';});
   })();
   </script>
 """

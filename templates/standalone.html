@@ -11,6 +11,19 @@
     .mono { font-family: 'D2Coding', 'Consolas', 'Courier New', monospace; }
     .scrollbox { max-height: 380px; overflow-y: auto; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+
+    /* 화면에선 인쇄 전용 영역 숨김 */
+    #print-area { display: none; }
+    /* 인쇄 시: QR만 지정 크기로 출력 (페이지 전체 대신) */
+    @media print {
+      body > *:not(#print-area) { display: none !important; }
+      #print-area {
+        display: flex !important;
+        align-items: center;
+        justify-content: center;
+      }
+      @page { margin: 8mm; }
+    }
   </style>
 </head>
 <body class="bg-slate-50 min-h-screen">
@@ -203,13 +216,19 @@
       <div class="flex flex-col lg:flex-row gap-6 items-start">
         <div class="shrink-0">
           <img id="qr-image" class="border-4 border-slate-200 rounded" />
-          <div class="mt-3 flex gap-2">
+          <div class="mt-3 flex flex-wrap items-center gap-2">
             <a id="qr-download" download="emergency_qr.png" class="inline-block bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2 rounded shadow text-sm">
               ⬇ PNG
             </a>
-            <button onclick="window.print()" class="inline-block bg-slate-600 hover:bg-slate-700 text-white font-semibold px-4 py-2 rounded shadow text-sm">
-              🖨 인쇄
+            <button onclick="printQR()" class="inline-block bg-slate-600 hover:bg-slate-700 text-white font-semibold px-4 py-2 rounded shadow text-sm">
+              🖨 QR만 인쇄
             </button>
+            <label class="flex items-center gap-1 text-sm text-slate-600 ml-1">
+              크기
+              <input id="print-size" type="number" min="1" max="10" step="0.5" value="2.5"
+                     class="w-16 border rounded px-2 py-1 text-center" />
+              cm
+            </label>
           </div>
           <p class="mt-3 text-xs text-slate-500">
             ※ 2cm × 2cm 이상 출력 권장.<br>
@@ -232,6 +251,11 @@
       </details>
     </section>
   </main>
+
+  <!-- 인쇄 전용: QR만 지정 크기(cm)로 출력. @media print에서만 보임 -->
+  <div id="print-area">
+    <img id="print-qr-image" alt="응급 QR 코드" />
+  </div>
 
   <!-- 외부 검색 모달 -->
   <div id="external-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-6">
@@ -960,6 +984,7 @@
       qr.make();
       const url = qr.createDataURL(10, 4);  // 셀 10px, 인식 안정성↑
       $("qr-image").src = url;
+      $("print-qr-image").src = url;  // 인쇄 전용 이미지도 미리 로드(첫 인쇄 빈 출력 방지)
       $("qr-download").href = url;
       renderCautionSummary(items.map(x => x.drug));  // 주의 요약 패널
       $("qr-section").classList.remove("hidden");
@@ -969,6 +994,28 @@
       console.error(e);
     }
   }
+
+
+  // QR만 지정 크기(cm)로 인쇄 — 페이지 전체 대신 #print-area만 출력.
+  // 인쇄 이미지는 generateQR에서 미리 세팅되므로 여기선 크기만 적용.
+  function applyPrintSize() {
+    let cm = parseFloat($("print-size").value);
+    if (!(cm > 0)) cm = 2.5;
+    const img = $("print-qr-image");
+    img.style.width  = cm + "cm";
+    img.style.height = cm + "cm";
+  }
+
+  function printQR() {
+    if (!$("qr-image").src) { alert("먼저 QR 코드를 생성하세요."); return; }
+    applyPrintSize();
+    window.print();
+  }
+
+  // 브라우저 인쇄(Ctrl+P)로도 QR만 지정 크기로 나오도록 동기화
+  window.addEventListener("beforeprint", () => {
+    if ($("qr-image").src) applyPrintSize();
+  });
 
 
   // ============================================================

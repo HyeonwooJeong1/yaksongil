@@ -848,10 +848,8 @@
 
     const { text, normalCount } = formatEmergencyText(items);
     $("preview").textContent = text;
-    // QR 실제 페이로드 = 한글 텍스트 + 복원용 데이터 블록. 스캔 안정성은 이 길이에 좌우됨.
-    const qrLen = items.length ? (text + "\n" + buildMachineBlock(items)).length : text.length;
     $("length-counter").textContent =
-      `${text.length} / ${MAX_LENGTH}자` + (text.length > MAX_LENGTH ? " (초과)" : "") + ` · QR ${qrLen}자`;
+      `${text.length} / ${MAX_LENGTH}자` + (text.length > MAX_LENGTH ? " (초과)" : "");
 
     if (text.length > MAX_LENGTH) {
       $("length-counter").className = "text-sm font-semibold text-red-600";
@@ -884,42 +882,14 @@
 
 
   // ============================================================
-  // 복원용 데이터 블록 — 하드웨어 QR 리더기 호환
-  //   문제: 키보드 흉내(HID) 리더기는 한글을 못 친다. 게다가 받는 PC의 한글 IME가
-  //         켜져 있으면 영문자마저 자모로 바뀐다. → 블록을 "숫자와 일부 기호"로만
-  //         구성해 어떤 리더기·IME 환경에서도 안 깨지게 한다. (영문자 전면 배제)
-  //   포맷:  *#*1;<환자>;<약물>
-  //     환자: birth8.sex.height.weight.abo.rh.name(유니코드 코드포인트, '-' 구분)
-  //           sex 남=1·여=2, abo A=1·B=2·O=3·AB=4, rh +=1·-=2 (없으면 0/빈값)
-  //     약물: <표준코드(숫자)>.<종료YYMMDD> 를 ','로 연결 (종료일 없으면 코드만)
-  //   한글 텍스트는 그대로 두고 이 블록만 덧붙임 → 폰 카메라의 한글 표시엔 무영향.
+  // (구) 복원용 데이터 블록 디코더 — 하드웨어 리더기 호환용이었음
+  //   신규 QR에는 블록(*#*…)을 더 이상 넣지 않음 (QR이 복잡해져 제거).
+  //   이미 인쇄·배포된 구 QR을 불러올 때를 위해 디코더만 유지.
+  //   포맷: *#*1;<환자>;<약물>
+  //     환자: birth8.sex.height.weight.abo.rh.name(유니코드 코드포인트 '-' 구분)
+  //     약물: <표준코드(숫자)>.<종료YYMMDD> 를 ','로 연결
   // ============================================================
   const BLOCK_RE = /\*#\*([0-9.,;\-]+)/;   // 앞쪽 한글이 깨져도 이 블록만 추출
-
-  function encodeNameCodepoints(name) {
-    return name ? [...name].map(ch => ch.codePointAt(0)).join("-") : "";
-  }
-
-  function buildMachineBlock(items) {
-    const p = state.patient;
-    const birth8 = (p.birth || "").replace(/\D/g, "").slice(0, 8);
-    const sex = p.gender === "남" ? "1" : p.gender === "여" ? "2" : "0";
-    const abo = ({ A: "1", B: "2", O: "3", AB: "4" })[p.bloodAbo] || "0";
-    const rh  = p.bloodRh === "+" ? "1" : p.bloodRh === "-" ? "2" : "0";
-    const patientStr = [birth8, sex, p.height || "", p.weight || "", abo, rh,
-                        encodeNameCodepoints(p.name)].join(".");
-
-    const drugStr = items.map(({ drug, endDate }) => {
-      // HIRA 표준코드(숫자)만 블록에 포함 → 숫자라 리더기·IME에 안전.
-      // DUR/MFDS 등 영문 섞인 코드는 폰 한글 표시엔 남지만 리더기 복원 대상에선 제외(희소).
-      const code = drug.kd_code.startsWith("HIRA_") ? drug.kd_code.slice(5) : drug.kd_code;
-      if (!/^\d+$/.test(code)) return null;
-      const end = endDate ? endDate.replace(/\D/g, "").slice(0, 6) : "";
-      return end ? `${code}.${end}` : code;
-    }).filter(Boolean).join(",");
-
-    return `*#*1;${patientStr};${drugStr}`;
-  }
 
   function decodeMachineBlock(raw) {
     if (!raw) return null;
@@ -976,11 +946,9 @@
   function generateQR() {
     const items = getSelectedItems();
     const { text } = formatEmergencyText(items);
-    // 한글 텍스트(폰 카메라용) + 복원용 데이터 블록(하드웨어 리더기용)
-    const payload = items.length ? `${text}\n${buildMachineBlock(items)}` : text;
     try {
       const qr = qrcode(0, "M");
-      qr.addData(utf8ToByteString(payload), "Byte");  // UTF-8 한글 + ASCII 데이터 블록
+      qr.addData(utf8ToByteString(text), "Byte");  // UTF-8 한글 텍스트만 (데이터 블록 제거)
       qr.make();
       const url = qr.createDataURL(10, 4);  // 셀 10px, 인식 안정성↑
       $("qr-image").src = url;
